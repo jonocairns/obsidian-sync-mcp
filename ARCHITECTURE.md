@@ -28,6 +28,18 @@ The MCP server sits between CouchDB (or the local filesystem) and AI agents. It 
 - Startup: opens the SQLite index and catches up via CouchDB `_changes` from its stored `since` sequence
 - Live watcher: `_changes` feed with `live: true` for real-time updates
 
+## MCP transport
+
+FastMCP serves MCP over Streamable HTTP at `/mcp`. The default is sessionful
+transport for broad client compatibility. With `MCP_STATELESS=true`, FastMCP
+creates an isolated transport for each request and does not issue or retain an
+MCP session ID. This is useful behind clients and proxies that do not preserve
+session affinity.
+
+Stateless mode is an operational compatibility and latency option within the
+current transport. It is deliberately separate from the future protocol-level
+transport modernization on the fork roadmap.
+
 ## Search indexes (`src/search.ts`, `src/full-text-search.ts`)
 
 A `SearchIndex` facade uses in-memory maps only when `FULL_TEXT_SEARCH=false`.
