@@ -8,9 +8,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   lint:
@@ -116,8 +114,14 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [lint, audit, build, test, test-e2e, test-couchdb]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v5
+      - name: Verify tag matches package version
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${PACKAGE_VERSION}"
       - uses: actions/download-artifact@v5
         with:
           name: package
@@ -143,31 +147,13 @@ jobs:
               *.tgz
           fi
 
-  publish-npm:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          submodules: recursive
-      # The encrypted SQLite dependency supports the Node 22 and 24 lines.
-      # Use Node 24 here to avoid the npm bug in Node 22.22.2 (nodejs/node#62425).
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-      - run: npm install -g npm@latest
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npm publish --provenance --access public
-
   publish-docker:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
     needs: release
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v5
         with:

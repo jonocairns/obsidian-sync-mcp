@@ -2,7 +2,7 @@
 # For Fly.io GitHub deploy and CLI deploy
 # Pulls the pre-built image from ghcr.io
 
-ARG MCP_IMAGE=ghcr.io/es617/obsidian-sync-mcp:latest
+ARG MCP_IMAGE=ghcr.io/jonocairns/obsidian-sync-mcp:latest
 FROM ${MCP_IMAGE}
 
 ENV DATA_DIR=/data
