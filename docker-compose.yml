@@ -18,7 +18,7 @@ services:
       - ./deploy/mcp-with-db/couchdb-init.ini:/opt/couchdb/etc/local.d/livesync.ini
 
   mcp:
-    image: ghcr.io/es617/obsidian-sync-mcp:latest
+    image: ghcr.io/jonocairns/obsidian-sync-mcp:latest
     ports:
       - "8787:8787"
     environment:

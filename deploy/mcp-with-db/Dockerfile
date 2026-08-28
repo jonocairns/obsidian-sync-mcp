@@ -1,12 +1,12 @@
 # CouchDB + MCP server — full self-contained deployment
 # Uses the pre-built MCP server image from ghcr.io
 
-ARG MCP_IMAGE=ghcr.io/es617/obsidian-sync-mcp:latest
+ARG MCP_IMAGE=ghcr.io/jonocairns/obsidian-sync-mcp:latest
 FROM ${MCP_IMAGE} AS mcp
 
 # Use CouchDB as base — has all CouchDB deps pre-installed
 FROM couchdb:3
-LABEL org.opencontainers.image.source="https://github.com/es617/obsidian-sync-mcp"
+LABEL org.opencontainers.image.source="https://github.com/jonocairns/obsidian-sync-mcp"
 ARG MCP_IMAGE
 LABEL mcp.image="${MCP_IMAGE}"
 

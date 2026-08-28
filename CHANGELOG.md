@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.7.0
+
+### Release
+- Establish `jonocairns/obsidian-sync-mcp` as the canonical fork source and GHCR release line while preserving explicit upstream attribution.
+- Disable npm publication until the fork has a distinct package identity and trusted-publisher configuration.
+
 ### Security
 - Harden the encrypted full-text index key derivation with scrypt before HKDF. Search v2 uses a separate encrypted file, preserving the prototype index for rollback.
 - Scope search storage, encryption keys, and CouchDB checkpoints to a stable backend identity instead of `VAULT_NAME`. Unverifiable name-scoped indexes are left intact and rebuilt once; an identity mismatch inside SQLite is archived before rebuilding.

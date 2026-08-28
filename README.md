@@ -2,6 +2,9 @@
 
 <!-- mcp-name: io.github.es617/obsidian-sync-mcp -->
 
+> [!IMPORTANT]
+> [`jonocairns/obsidian-sync-mcp`](https://github.com/jonocairns/obsidian-sync-mcp) is the canonical repository and release line for this fork. Changes may be proposed upstream when they are useful and narrowly scoped, but upstream acceptance is not a release gate. Fork releases are currently distributed through GitHub and GHCR; `npx obsidian-sync-mcp` still installs the upstream npm package.
+
 ![MCP](https://img.shields.io/badge/MCP-compatible-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Node](https://img.shields.io/badge/node-22.14%2B%20%7C%2024-green.svg)
@@ -30,7 +33,7 @@ Both modes expose the same MCP tools over HTTP, so any MCP-compatible agent can 
 |---|---|---|
 | Yes | Yes | [Setup A](#a-deploy-mcp-to-the-cloud) — add MCP alongside your existing CouchDB |
 | Yes | No | [Setup B](#b-deploy-everything-to-the-cloud) — CouchDB + MCP + LiveSync from scratch |
-| No | — | [Setup C](#c-run-on-your-machine) — filesystem or CouchDB, npx or Docker |
+| No | — | [Setup C](#c-run-on-your-machine) — filesystem or CouchDB, source or Docker |
 
 ---
 
@@ -41,7 +44,7 @@ You already have LiveSync and CouchDB on an always-on server. You just need the 
 **Using Fly.io setup script** (macOS/Linux, or WSL on Windows):
 
 ```bash
-git clone https://github.com/es617/obsidian-sync-mcp.git
+git clone https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
 ./deploy/setup.sh    # choose option 2 (MCP only)
 ```
@@ -60,7 +63,7 @@ docker run -p 8787:8787 \
   -e COUCHDB_OBFUSCATE_PROPERTIES=false \
   -e MCP_AUTH_TOKEN=yourpassword \
   -e BASE_URL=https://your-server-url \
-  ghcr.io/es617/obsidian-sync-mcp:latest
+  ghcr.io/jonocairns/obsidian-sync-mcp:latest
 ```
 
 Set `COUCHDB_PASSPHRASE` if you use E2E encryption in LiveSync. Set `COUCHDB_OBFUSCATE_PROPERTIES=true` if "Obfuscate Properties" is also enabled in your LiveSync settings. For an existing vault the server detects the actual setting from the database at startup and corrects a mismatch with a warning; only for a brand-new empty database does the value need to match your LiveSync settings. Set `BASE_URL` to your public URL (required for OAuth callbacks when agents connect over HTTPS).
@@ -86,7 +89,7 @@ Starting fresh — no LiveSync yet. Deploy CouchDB and MCP together, then set up
 **Using Fly.io setup script** (macOS/Linux, or WSL on Windows):
 
 ```bash
-git clone https://github.com/es617/obsidian-sync-mcp.git
+git clone https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
 ./deploy/setup.sh    # choose option 1 (CouchDB + MCP)
 ```
@@ -96,7 +99,7 @@ The script generates credentials, creates the database, and deploys. Save the cr
 **Or with Docker Compose on any always-on server:**
 
 ```bash
-git clone https://github.com/es617/obsidian-sync-mcp.git
+git clone https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
 
 cat > .env <<EOF
@@ -147,14 +150,21 @@ As of March 2026, Fly.io [may waive charges under $5/month](https://community.fl
 
 ## C. Run on your machine
 
-Run the MCP server locally. Works with filesystem mode (reads vault files directly) or CouchDB mode (if you have LiveSync). Machine must stay on for agents to reach it.
+Run the MCP server locally. Works with filesystem mode (reads vault files directly) or CouchDB mode (if you have LiveSync). Machine must stay on for agents to reach it. Until the fork has its own npm package, build a source checkout once before using `npm start`:
+
+```bash
+git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
+cd obsidian-sync-mcp
+npm ci --ignore-scripts
+npm run build
+```
 
 **Filesystem mode (simplest):**
 
 ```bash
 VAULT_PATH=~/Documents/MyVault \
 VAULT_NAME=MyVault \
-npx obsidian-sync-mcp
+npm start
 ```
 
 **CouchDB mode (if you have LiveSync):**
@@ -167,7 +177,7 @@ COUCHDB_DATABASE=obsidian \
 COUCHDB_PASSPHRASE=your-encryption-passphrase \
 COUCHDB_OBFUSCATE_PROPERTIES=false \
 VAULT_NAME=MyVault \
-npx obsidian-sync-mcp
+npm start
 ```
 
 Omit `COUCHDB_PASSPHRASE` if you don't use E2E encryption in LiveSync. Set `COUCHDB_OBFUSCATE_PROPERTIES=true` if "Obfuscate Properties" is also enabled in your LiveSync settings. For an existing vault the server detects the actual setting from the database at startup and corrects a mismatch with a warning; only for a brand-new empty database does the value need to match your LiveSync settings.
@@ -179,7 +189,7 @@ docker run -p 8787:8787 \
   -v mcp-data:/data -e DATA_DIR=/data \
   -e VAULT_PATH=/vault -v ~/Documents/MyVault:/vault \
   -e VAULT_NAME=MyVault \
-  ghcr.io/es617/obsidian-sync-mcp:latest
+  ghcr.io/jonocairns/obsidian-sync-mcp:latest
 ```
 
 Your MCP endpoint is `http://localhost:8787/mcp`.
@@ -222,7 +232,7 @@ Every tool response includes an [Obsidian deep link](https://help.obsidian.md/Ex
 Set `MCP_AUTH_TOKEN` to a password to enable authentication:
 
 ```bash
-MCP_AUTH_TOKEN=mysecretpassword npx obsidian-sync-mcp
+MCP_AUTH_TOKEN=mysecretpassword npm start
 ```
 
 The server includes a self-contained OAuth 2.1 provider. When an agent connects:
@@ -319,7 +329,7 @@ derived index, never the source vault.
 Test the server interactively using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
-VAULT_PATH=~/Documents/MyVault npx obsidian-sync-mcp &
+VAULT_PATH=~/Documents/MyVault npm start &
 npx @modelcontextprotocol/inspector
 ```
 
@@ -331,9 +341,9 @@ Set transport to **Streamable HTTP**, enter `http://localhost:8787/mcp`, and con
 
 | How you run it | How to update |
 |---|---|
-| `npx obsidian-sync-mcp` | Automatic — npx pulls latest |
+| Source checkout | `git pull`, then `npm ci --ignore-scripts && npm run build` |
 | Fly.io | From the same directory where you ran setup: `fly deploy`. If you lost the fly.toml, run `fly config save --app your-app-name` to restore it. |
-| Docker | `docker pull ghcr.io/es617/obsidian-sync-mcp:latest` and restart |
+| Docker | `docker pull ghcr.io/jonocairns/obsidian-sync-mcp:latest` and restart |
 
 ---
 
@@ -365,14 +375,14 @@ This server gives an AI agent read/write access to your Obsidian vault.
 
 **Use HTTPS in production.** Use a tunnel or deploy behind a reverse proxy.
 
-This software is provided as-is under the [MIT license](https://github.com/es617/obsidian-sync-mcp/blob/main/LICENSE). You are responsible for what agents do with your vault.
+This software is provided as-is under the [MIT license](https://github.com/jonocairns/obsidian-sync-mcp/blob/main/LICENSE). You are responsible for what agents do with your vault.
 
 ---
 
 ## Development
 
 ```bash
-git clone --recursive https://github.com/es617/obsidian-sync-mcp.git
+git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
 npm install && npm run build
 npm test          # unit tests
@@ -383,10 +393,11 @@ npm run test:e2e  # integration tests
 
 ## License
 
-MIT — see [LICENSE](https://github.com/es617/obsidian-sync-mcp/blob/main/LICENSE).
+MIT — see [LICENSE](https://github.com/jonocairns/obsidian-sync-mcp/blob/main/LICENSE).
 
 ## Acknowledgements
 
+- [es617/obsidian-sync-mcp](https://github.com/es617/obsidian-sync-mcp) — the upstream project this fork builds on
 - [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) by vrtmrz — the Obsidian plugin and CouchDB sync protocol
 - [livesync-commonlib](https://github.com/vrtmrz/livesync-commonlib) by vrtmrz — the shared library for reading/writing the LiveSync document format
 - [FastMCP](https://github.com/punkpeye/fastmcp) — TypeScript MCP framework
