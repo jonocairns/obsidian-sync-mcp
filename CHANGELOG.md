@@ -1,9 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 ### Features
 - Restore opt-in stateless Streamable HTTP with `MCP_STATELESS=true`, allowing clients and proxies to make independent tool requests without server-side session affinity.
+
+### Fixes
+- Preserve the search index `backend_identity` across `clear()`. A CouchDB catch-up fallback (clear plus full rebuild) previously left the rebuilt index with no identity row, so the next startup treated it as a backend mismatch and needlessly archived and rebuilt a valid index.
 
 ### Dependencies
 - Upgrade FastMCP from 3.x to 4.x and exercise MCP protocol `2025-11-25` in end-to-end tests. FastMCP v4 avoids unavailable client-capability polling in stateless mode.
