@@ -46,6 +46,7 @@ async function mcpCall(method: string, params: any, id = 1): Promise<any> {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "Authorization": `Bearer ${AUTH}`,
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
             ...(sessionId ? { "mcp-session-id": sessionId } : {}),
         },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
@@ -70,6 +71,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
     server.stderr?.on("data", (d) => { serverLogs += d.toString(); });
 
     const start = Date.now();
+    let lastError: unknown;
     while (Date.now() - start < 10000) {
         try {
             const resp = await fetch(BASE, {
@@ -80,12 +82,35 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
             if (resp.ok) {
                 sessionId = resp.headers.get("mcp-session-id") ?? "";
                 lastInitResult = parseSSE(await resp.text());
+                assert.equal(
+                    lastInitResult?.result?.protocolVersion,
+                    MCP_PROTOCOL_VERSION,
+                    "server should negotiate MCP protocol 2025-11-25",
+                );
+
+                const initialized = await fetch(BASE, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        "Authorization": `Bearer ${AUTH}`,
+                        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+                        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "notifications/initialized",
+                    }),
+                });
+                assert.equal(initialized.status, 202, "server should accept notifications/initialized");
                 return;
             }
-        } catch { /* not ready */ }
+        } catch (error) {
+            lastError = error;
+        }
         await new Promise((r) => setTimeout(r, 200));
     }
-    throw new Error("Server did not start in time");
+    throw new Error("Server did not start in time", { cause: lastError });
 }
 
 async function stopServer(): Promise<string> {
@@ -107,6 +132,7 @@ before(async () => {
     await writeFile(join(vaultDir, "projects/test.md"), "See [[Welcome]]\n\n#project");
 
     await startServer({ VAULT_PATH: vaultDir, VAULT_NAME: "TestVault" });
+    assert.ok(sessionId, "sessionful mode should issue an MCP session ID by default");
 });
 
 after(async () => {
@@ -355,6 +381,7 @@ describe("E2E: stateless Streamable HTTP", () => {
         const second = await callTool("search_notes", { query: "welcome" });
         assert.ok(first.includes("Welcome.md"));
         assert.ok(second.includes("Welcome.md"));
+        await new Promise((r) => setTimeout(r, 1500));
         assert.ok(
             !serverLogs.includes("could not infer client capabilities"),
             "FastMCP v4 should not poll unavailable client capabilities in stateless mode",

@@ -50,7 +50,11 @@ const WRITE_FOLDERS = parseWriteFolders(process.env.WRITE_FOLDERS);
 const FULL_TEXT_SEARCH = process.env.FULL_TEXT_SEARCH;
 let MCP_STATELESS: boolean;
 try {
-    MCP_STATELESS = resolveMcpStatelessSetting(process.env.MCP_STATELESS);
+    MCP_STATELESS = resolveMcpStatelessSetting(
+        process.env.MCP_STATELESS,
+        process.env.FASTMCP_STATELESS,
+        process.argv.slice(2),
+    );
 } catch (error) {
     console.error((error as Error).message);
     process.exit(1);

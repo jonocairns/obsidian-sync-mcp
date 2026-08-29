@@ -2,6 +2,7 @@
 #   COUCHDB_PASSWORD=<strong-password>
 #   VAULT_NAME=MyVault
 #   MCP_AUTH_TOKEN=<password-for-mcp>
+#   MCP_STATELESS=true              (optional)
 #   LIVESYNC_USER=livesync          (optional, recommended)
 #   LIVESYNC_PASSWORD=<password>    (optional, recommended)
 
@@ -28,6 +29,7 @@ services:
       COUCHDB_DATABASE: ${COUCHDB_DATABASE:-obsidian}
       VAULT_NAME: ${VAULT_NAME:-MyVault}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
+      MCP_STATELESS: ${MCP_STATELESS:-false}
       BASE_URL: ${BASE_URL:-http://localhost:8787}
     depends_on:
       - couchdb
