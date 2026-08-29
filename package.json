@@ -41,7 +41,7 @@
     "dependencies": {
         "better-sqlite3-multiple-ciphers": "^13.0.3",
         "diff-match-patch": "^1.0.5",
-        "fastmcp": "^3.34.0",
+        "fastmcp": "^4.16.12",
         "fflate": "^0.8.2",
         "minimatch": "^10",
         "octagonal-wheels": "^0.1.39",

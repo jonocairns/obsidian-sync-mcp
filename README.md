@@ -268,6 +268,7 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `MCP_ALLOWED_HOSTS` | Optional | — | Comma-separated extra `Host` values accepted in no-auth mode (e.g. `192.168.1.5,mybox.local`). No-auth mode rejects any other Host to block browser DNS-rebinding; localhost is always allowed. Ignored when `MCP_AUTH_TOKEN` is set. |
 | `DATA_DIR` | Optional | `~/.obsidian-mcp` | Directory for the SQLite search index and auth tokens |
 | `FULL_TEXT_SEARCH` | Optional | `auto` | Disk-backed SQLite full-text search: `auto` and `true` enable it; `false` disables it. When `COUCHDB_PASSPHRASE` is set, the local index is encrypted with a backend-specific derived key. Note: `false` also disables index persistence — metadata is rebuilt in memory on every startup, and CouchDB mode replays the full `_changes` feed each time. |
+| `MCP_STATELESS` | Optional | `false` | Set to `true` to serve each Streamable HTTP request independently without issuing a server session ID. This avoids session affinity for clients or proxies that open a fresh connection per tool call. Leave disabled for compatibility with clients that depend on session state. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`write_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
@@ -276,6 +277,11 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `MCP_INSTRUCTIONS_FILE` | Optional | — | Path to a file (e.g. markdown) whose contents are appended to the MCP `instructions`. Easier than `MCP_INSTRUCTIONS` for multi-line conventions. If both are set, the file wins and `MCP_INSTRUCTIONS` is ignored (with a startup warning). Missing/unreadable file or files larger than 32 KB are fatal startup errors. **Store this file somewhere only the service user can write (e.g. `chmod 600`)** — its contents land in every MCP session's system prompt, so write access to it = prompt-injection access to every client. |
 
 Set `VAULT_PATH` for filesystem mode or `COUCHDB_URL` for CouchDB mode.
+
+`MCP_STATELESS=true` changes how the current Streamable HTTP transport manages
+requests; it is not the later MCP transport-protocol migration on the fork
+roadmap. Requests must be self-contained in stateless mode, and the server does
+not retain client session state between them.
 
 `FULL_TEXT_SEARCH=auto` is the upstream default and currently has the same
 enablement behaviour as `true`: both expose `search_notes` and persist the

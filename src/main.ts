@@ -18,6 +18,7 @@ import {
 } from "./full-text-search.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
+import { resolveMcpStatelessSetting } from "./transport.js";
 import { parseWriteFolders } from "./write-scope.js";
 
 // Suppress livesync-commonlib logs that expose vault file paths in production.
@@ -47,6 +48,17 @@ const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
 const READ_ONLY = process.env.READ_ONLY === "true";
 const WRITE_FOLDERS = parseWriteFolders(process.env.WRITE_FOLDERS);
 const FULL_TEXT_SEARCH = process.env.FULL_TEXT_SEARCH;
+let MCP_STATELESS: boolean;
+try {
+    MCP_STATELESS = resolveMcpStatelessSetting(
+        process.env.MCP_STATELESS,
+        process.env.FASTMCP_STATELESS,
+        process.argv.slice(2),
+    );
+} catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+}
 
 // Extra instructions appended to the MCP `instructions` string.
 // File wins if both are set (loud warning); missing file is fatal.
@@ -430,11 +442,19 @@ setInterval(async () => {
 }, 5 * 60 * 1000).unref();
 
 // --- Start server ---
-server.start({
+await server.start({
     transportType: "httpStream",
-    httpStream: { port: PORT, endpoint: "/mcp", host: process.env.HOST ?? "0.0.0.0" },
+    httpStream: {
+        port: PORT,
+        endpoint: "/mcp",
+        host: process.env.HOST ?? "0.0.0.0",
+        stateless: MCP_STATELESS,
+    },
 });
-console.log(`obsidian-sync-mcp v${process.env.npm_package_version ?? "unknown"} listening on port ${PORT}`);
+console.log(
+    `obsidian-sync-mcp v${process.env.npm_package_version ?? "unknown"} listening on port ${PORT} ` +
+    `(Streamable HTTP, ${MCP_STATELESS ? "stateless" : "sessionful"})`,
+);
 
 // Prevent unhandled rejections from crashing the server (e.g. decryption failures in watcher)
 process.on("unhandledRejection", (err) => {

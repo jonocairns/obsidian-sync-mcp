@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+- Restore opt-in stateless Streamable HTTP with `MCP_STATELESS=true`, allowing clients and proxies to make independent tool requests without server-side session affinity.
+
+### Dependencies
+- Upgrade FastMCP from 3.x to 4.x and exercise MCP protocol `2025-11-25` in end-to-end tests. FastMCP v4 avoids unavailable client-capability polling in stateless mode.
+
 ## 0.7.0
 
 ### Release

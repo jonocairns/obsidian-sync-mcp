@@ -14,6 +14,7 @@ import { request as httpRequest } from "node:http";
 const PORT = 9877;
 const BASE = `http://localhost:${PORT}/mcp`;
 const AUTH = "ci-test-token";
+const MCP_PROTOCOL_VERSION = "2025-11-25";
 
 const NODE_BIN = existsSync("/opt/homebrew/opt/node@22/bin/node")
     ? "/opt/homebrew/opt/node@22/bin/node"
@@ -45,6 +46,7 @@ async function mcpCall(method: string, params: any, id = 1): Promise<any> {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "Authorization": `Bearer ${AUTH}`,
+            "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
             ...(sessionId ? { "mcp-session-id": sessionId } : {}),
         },
         body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
@@ -69,22 +71,46 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
     server.stderr?.on("data", (d) => { serverLogs += d.toString(); });
 
     const start = Date.now();
+    let lastError: unknown;
     while (Date.now() - start < 10000) {
         try {
             const resp = await fetch(BASE, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", "Authorization": `Bearer ${AUTH}` },
-                body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "e2e", version: "1.0" } } }),
+                body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "e2e", version: "1.0" } } }),
             });
             if (resp.ok) {
                 sessionId = resp.headers.get("mcp-session-id") ?? "";
                 lastInitResult = parseSSE(await resp.text());
+                assert.equal(
+                    lastInitResult?.result?.protocolVersion,
+                    MCP_PROTOCOL_VERSION,
+                    "server should negotiate MCP protocol 2025-11-25",
+                );
+
+                const initialized = await fetch(BASE, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        "Authorization": `Bearer ${AUTH}`,
+                        "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+                        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: "2.0",
+                        method: "notifications/initialized",
+                    }),
+                });
+                assert.equal(initialized.status, 202, "server should accept notifications/initialized");
                 return;
             }
-        } catch { /* not ready */ }
+        } catch (error) {
+            lastError = error;
+        }
         await new Promise((r) => setTimeout(r, 200));
     }
-    throw new Error("Server did not start in time");
+    throw new Error("Server did not start in time", { cause: lastError });
 }
 
 async function stopServer(): Promise<string> {
@@ -106,6 +132,7 @@ before(async () => {
     await writeFile(join(vaultDir, "projects/test.md"), "See [[Welcome]]\n\n#project");
 
     await startServer({ VAULT_PATH: vaultDir, VAULT_NAME: "TestVault" });
+    assert.ok(sessionId, "sessionful mode should issue an MCP session ID by default");
 });
 
 after(async () => {
@@ -120,7 +147,7 @@ describe("E2E: Auth", () => {
         const resp = await fetch(BASE, {
             method: "POST",
             headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream" },
-            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "e2e", version: "1.0" } } }),
+            body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "e2e", version: "1.0" } } }),
         });
         assert.equal(resp.status, 401);
     });
@@ -337,6 +364,31 @@ describe("E2E: cold restart with persisted index", () => {
     });
 });
 
+describe("E2E: stateless Streamable HTTP", () => {
+    it("serves consecutive tool calls without a server session ID", async () => {
+        await stopServer();
+        await startServer({
+            VAULT_PATH: vaultDir,
+            VAULT_NAME: "TestVault",
+            MCP_STATELESS: "true",
+            LOG_LEVEL: "debug",
+        });
+
+        assert.equal(sessionId, "", "stateless responses should not issue an MCP session ID");
+        assert.ok(serverLogs.includes("Streamable HTTP, stateless"), "should log stateless transport mode");
+
+        const first = await callTool("list_notes", { name: "Welcome" });
+        const second = await callTool("search_notes", { query: "welcome" });
+        assert.ok(first.includes("Welcome.md"));
+        assert.ok(second.includes("Welcome.md"));
+        await new Promise((r) => setTimeout(r, 1500));
+        assert.ok(
+            !serverLogs.includes("could not infer client capabilities"),
+            "FastMCP v4 should not poll unavailable client capabilities in stateless mode",
+        );
+    });
+});
+
 // Runs last: replaces the shared auth server with a no-auth instance to exercise
 // the Host-header allowlist. Uses raw http.request because fetch() forbids
 // setting the Host header — which is exactly what a DNS-rebinding browser sends.
@@ -345,7 +397,7 @@ describe("E2E: no-auth Host allowlist (DNS-rebinding)", () => {
         return new Promise((resolve, reject) => {
             const body = JSON.stringify({
                 jsonrpc: "2.0", id: 1, method: "initialize",
-                params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "poc", version: "1.0" } },
+                params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "poc", version: "1.0" } },
             });
             const headers: Record<string, string | number> = {
                 "Host": hostHeader,
