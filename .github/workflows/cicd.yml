@@ -10,42 +10,51 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: nix develop --command bash -e {0}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npx --yes oxlint@latest --deny-warnings src/
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: nix flake check --no-update-lock-file
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
 
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npm ci --ignore-scripts
-      - run: npm audit --audit-level=high
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level=high
 
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npm pack --dry-run
-      - run: npm pack
-      - uses: actions/upload-artifact@v5
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm pack --dry-run
+      - run: pnpm pack
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: package
           path: "*.tgz"
@@ -56,31 +65,33 @@ jobs:
       matrix:
         # 22.13 segfaults in better-sqlite3-multiple-ciphers; keep the exact
         # supported floor and the other supported LTS line under test.
-        node-version: ["22.14.0", "24"]
+        dev-shell: ["node22-min", "node24"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: ${{ matrix.node-version }}
-      - run: npm ci --ignore-scripts
-      - run: npm test
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: nix develop ".#${{ matrix.dev-shell }}" --command pnpm install --frozen-lockfile
+      - run: nix develop ".#${{ matrix.dev-shell }}" --command pnpm test
 
   # E2E: start server in local mode, test all tools via MCP protocol
   test-e2e:
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npm run test:e2e
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:e2e
 
   # E2E: CouchDB mode against a real CouchDB — exercises the LiveSync write
   # path and the Obfuscate Properties auto-detection (issues #4, #10)
@@ -89,7 +100,7 @@ jobs:
     needs: build
     services:
       couchdb:
-        image: couchdb:3
+        image: couchdb:3@sha256:9ea24cbd76522fe845d1c32c7fd1dcfc8a3ba73dcc4817d62f8a7f7f1dfaffe3
         ports:
           - 5985:5984
         env:
@@ -101,28 +112,93 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npm ci --ignore-scripts
-      - run: npm run test:couchdb
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:couchdb
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          submodules: recursive
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
+        with:
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - name: Build and smoke-test container variants
+        run: |
+          set -o pipefail
+          MCP_IMAGE="$(sed -n 's/^MCP_IMAGE=//p' deploy/mcp-image.env)"
+          : "${MCP_IMAGE:?deploy/mcp-image.env must define MCP_IMAGE}"
+          docker build --tag obsidian-sync-mcp:ci .
+          docker build \
+            --build-arg "MCP_IMAGE=$MCP_IMAGE" \
+            --tag obsidian-sync-mcp:mcp-only-ci \
+            deploy/mcp-only
+          docker build \
+            --build-arg "MCP_IMAGE=$MCP_IMAGE" \
+            --tag obsidian-sync-mcp:combined-ci \
+            deploy/mcp-with-db
+
+          cleanup() {
+            docker rm --force obsidian-sync-mcp-root-ci obsidian-sync-mcp-combined-ci >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          wait_for_healthy() {
+            local container="$1"
+            for _attempt in {1..60}; do
+              status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
+              if [ "$status" = "healthy" ]; then
+                return 0
+              fi
+              if [ "$status" = "unhealthy" ]; then
+                break
+              fi
+              sleep 2
+            done
+            docker logs "$container"
+            return 1
+          }
+
+          docker run --detach --name obsidian-sync-mcp-root-ci \
+            --env MCP_AUTH_TOKEN=ci-test-token \
+            --env VAULT_PATH=/data/vault \
+            obsidian-sync-mcp:ci \
+            sh -c 'mkdir -p /data/vault && exec node dist/main.js'
+          wait_for_healthy obsidian-sync-mcp-root-ci
+
+          docker run --detach --name obsidian-sync-mcp-combined-ci \
+            --env COUCHDB_USER=admin \
+            --env COUCHDB_PASSWORD=ci-test-database-password \
+            --env MCP_AUTH_TOKEN=ci-test-token \
+            obsidian-sync-mcp:combined-ci
+          wait_for_healthy obsidian-sync-mcp-combined-ci
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [lint, audit, build, test, test-e2e, test-couchdb]
+    needs: [lint, audit, build, test, test-e2e, test-couchdb, docker-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
+        with:
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
       - name: Verify tag matches package version
         run: |
           PACKAGE_VERSION="$(node -p "require('./package.json').version")"
           test "${GITHUB_REF_NAME}" = "v${PACKAGE_VERSION}"
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: package
       - name: Extract changelog
@@ -155,22 +231,23 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           submodules: recursive
-      - uses: actions/setup-node@v5
+      - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
-          node-version: "22"
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - uses: docker/login-action@v3
+          installer-version: 2.35.1
+          extra-conf: experimental-features = nix-command flakes
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile
