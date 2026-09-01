@@ -54,7 +54,7 @@ The script asks for your CouchDB connection details, vault name, and encryption 
 **Or run the Docker image on any always-on server:**
 
 ```bash
-docker run -p 8787:8787 \
+docker run -p 127.0.0.1:8787:8787 \
   -v mcp-data:/data -e DATA_DIR=/data \
   -e COUCHDB_URL=https://your-couchdb:5984 \
   -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=yourpassword \
@@ -63,7 +63,7 @@ docker run -p 8787:8787 \
   -e COUCHDB_OBFUSCATE_PROPERTIES=false \
   -e MCP_AUTH_TOKEN=yourpassword \
   -e BASE_URL=https://your-server-url \
-  ghcr.io/jonocairns/obsidian-sync-mcp:latest
+  ghcr.io/jonocairns/obsidian-sync-mcp:v0.8.0@sha256:c11b001536d327618e763d15d1dc168fe2244fe89c35b5db85f3959fb6d92d5c
 ```
 
 Set `COUCHDB_PASSPHRASE` if you use E2E encryption in LiveSync. Set `COUCHDB_OBFUSCATE_PROPERTIES=true` if "Obfuscate Properties" is also enabled in your LiveSync settings. For an existing vault the server detects the actual setting from the database at startup and corrects a mismatch with a warning; only for a brand-new empty database does the value need to match your LiveSync settings. Set `BASE_URL` to your public URL (required for OAuth callbacks when agents connect over HTTPS).
@@ -99,11 +99,12 @@ The script generates credentials, creates the database, and deploys. Save the cr
 **Or with Docker Compose on any always-on server:**
 
 ```bash
-git clone https://github.com/jonocairns/obsidian-sync-mcp.git
+git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
 
 cat > .env <<EOF
 COUCHDB_PASSWORD=changeme
+MCP_AUTH_TOKEN=choose-a-separate-strong-password
 VAULT_NAME=MyVault
 EOF
 
@@ -113,8 +114,13 @@ docker compose up -d
 **After deployment:**
 
 1. In Obsidian, install [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) and configure it with the credentials from the setup output
-2. Your MCP endpoint is `https://your-app.fly.dev/mcp` (Fly.io) or `http://your-server:8787/mcp` (Docker)
+2. Your MCP endpoint is `https://your-app.fly.dev/mcp` (Fly.io) or the HTTPS
+   endpoint of the reverse proxy in front of Docker
 3. The `MCP_AUTH_TOKEN` is the password you enter when an agent connects
+
+Compose binds CouchDB and MCP to `127.0.0.1` by default. Put an HTTPS reverse
+proxy or tunnel in front of the ports for remote access. Set
+`BIND_ADDRESS=0.0.0.0` only on a trusted network; keep `MCP_AUTH_TOKEN` enabled.
 
 ```
 Always-on server
@@ -150,13 +156,14 @@ As of March 2026, Fly.io [may waive charges under $5/month](https://community.fl
 
 ## C. Run on your machine
 
-Run the MCP server locally. Works with filesystem mode (reads vault files directly) or CouchDB mode (if you have LiveSync). Machine must stay on for agents to reach it. Until the fork has its own npm package, build a source checkout once before using `npm start`:
+Run the MCP server locally. Works with filesystem mode (reads vault files directly) or CouchDB mode (if you have LiveSync). Machine must stay on for agents to reach it. Until the fork has its own npm package, build a source checkout once before using `pnpm start`:
 
 ```bash
 git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
-npm ci --ignore-scripts
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 ```
 
 **Filesystem mode (simplest):**
@@ -164,7 +171,7 @@ npm run build
 ```bash
 VAULT_PATH=~/Documents/MyVault \
 VAULT_NAME=MyVault \
-npm start
+pnpm start
 ```
 
 **CouchDB mode (if you have LiveSync):**
@@ -177,7 +184,7 @@ COUCHDB_DATABASE=obsidian \
 COUCHDB_PASSPHRASE=your-encryption-passphrase \
 COUCHDB_OBFUSCATE_PROPERTIES=false \
 VAULT_NAME=MyVault \
-npm start
+pnpm start
 ```
 
 Omit `COUCHDB_PASSPHRASE` if you don't use E2E encryption in LiveSync. Set `COUCHDB_OBFUSCATE_PROPERTIES=true` if "Obfuscate Properties" is also enabled in your LiveSync settings. For an existing vault the server detects the actual setting from the database at startup and corrects a mismatch with a warning; only for a brand-new empty database does the value need to match your LiveSync settings.
@@ -185,11 +192,11 @@ Omit `COUCHDB_PASSPHRASE` if you don't use E2E encryption in LiveSync. Set `COUC
 **Or with Docker:**
 
 ```bash
-docker run -p 8787:8787 \
+docker run -p 127.0.0.1:8787:8787 \
   -v mcp-data:/data -e DATA_DIR=/data \
   -e VAULT_PATH=/vault -v ~/Documents/MyVault:/vault \
   -e VAULT_NAME=MyVault \
-  ghcr.io/jonocairns/obsidian-sync-mcp:latest
+  ghcr.io/jonocairns/obsidian-sync-mcp:v0.8.0@sha256:c11b001536d327618e763d15d1dc168fe2244fe89c35b5db85f3959fb6d92d5c
 ```
 
 Your MCP endpoint is `http://localhost:8787/mcp`.
@@ -232,7 +239,7 @@ Every tool response includes an [Obsidian deep link](https://help.obsidian.md/Ex
 Set `MCP_AUTH_TOKEN` to a password to enable authentication:
 
 ```bash
-MCP_AUTH_TOKEN=mysecretpassword npm start
+MCP_AUTH_TOKEN=mysecretpassword pnpm start
 ```
 
 The server includes a self-contained OAuth 2.1 provider. When an agent connects:
@@ -335,8 +342,8 @@ derived index, never the source vault.
 Test the server interactively using the [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
-VAULT_PATH=~/Documents/MyVault npm start &
-npx @modelcontextprotocol/inspector
+VAULT_PATH=~/Documents/MyVault pnpm start &
+pnpm dlx @modelcontextprotocol/inspector
 ```
 
 Set transport to **Streamable HTTP**, enter `http://localhost:8787/mcp`, and connect.
@@ -347,9 +354,9 @@ Set transport to **Streamable HTTP**, enter `http://localhost:8787/mcp`, and con
 
 | How you run it | How to update |
 |---|---|
-| Source checkout | `git pull`, then `npm ci --ignore-scripts && npm run build` |
-| Fly.io | From the same directory where you ran setup: `fly deploy`. If you lost the fly.toml, run `fly config save --app your-app-name` to restore it. |
-| Docker | `docker pull ghcr.io/jonocairns/obsidian-sync-mcp:latest` and restart |
+| Source checkout | `git pull`, then `pnpm install --frozen-lockfile && pnpm build` |
+| Fly.io | `git pull`, enter the relevant `deploy/mcp-*` directory, run `. ../mcp-image.env`, then `fly deploy --build-arg "MCP_IMAGE=$MCP_IMAGE"`. The manifest selects an immutable reviewed image. If you lost the fly.toml, run `fly config save --app your-app-name` first. |
+| Docker | Pull the reviewed version-and-digest pair from the release notes, then restart |
 
 ---
 
@@ -363,10 +370,9 @@ Set transport to **Streamable HTTP**, enter `http://localhost:8787/mcp`, and con
 - **Node 22.14+ or Node 24 required.** Node 22.13 crashes inside the native
   SQLite dependency. The dependency must also match the runtime platform and
   architecture.
-- **Source checkouts should use `npm ci --ignore-scripts`.** The SQLite package
-  bundles Linux, macOS, and Windows prebuilds, but npm otherwise invokes its
-  unnecessary implicit `node-gyp rebuild`; compiling from source requires
-  Python, `make`, and a C++ compiler.
+- **Source checkouts use pnpm with a seven-day dependency cooldown.** Dependency
+  lifecycle scripts are denied unless their exact package version is reviewed in
+  `pnpm-workspace.yaml`; unreviewed scripts fail the install.
 - **Setup script requires bash.** The `deploy/setup.sh` script works on macOS and Linux. On Windows, use WSL or Git Bash.
 
 ---
@@ -387,13 +393,53 @@ This software is provided as-is under the [MIT license](https://github.com/jonoc
 
 ## Development
 
+With Node 22.14+ or Node 24 installed:
+
 ```bash
 git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
 cd obsidian-sync-mcp
-npm install && npm run build
-npm test          # unit tests
-npm run test:e2e  # integration tests
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
+pnpm test      # unit tests
+pnpm test:e2e  # integration tests
 ```
+
+### Nix and direnv
+
+The repository includes a Nix flake that provides Node 22. If you use
+[direnv](https://direnv.net/) with [nix-direnv](https://github.com/nix-community/nix-direnv)
+and its shell hook installed, allow the checked-in environment once and it will
+load whenever you enter the repository:
+
+```bash
+direnv allow
+pnpm install --frozen-lockfile
+```
+
+Without direnv, enter the same development environment manually:
+
+```bash
+nix develop
+```
+
+Then use the same `pnpm build`, `pnpm test`, and `pnpm test:e2e` commands
+shown above.
+
+### Dependency policy
+
+pnpm 11 is pinned in `package.json`. `pnpm-workspace.yaml` rejects dependency
+versions published less than seven days ago, including transitive dependencies,
+and fails closed when registry publication times are missing. Four exact
+versions carried over from the npm lockfile are temporarily grandfathered; no
+other versions of those packages are exempt.
+
+Dependency lifecycle scripts are denied by default. The exact locked esbuild
+and macOS fsevents versions are allowed to build. The tldjs informational
+postinstall and better-sqlite3's implicit source build are explicitly denied;
+the latter uses its bundled prebuild. Any new unreviewed build script fails the
+install. Review and update `allowBuilds` deliberately when a dependency upgrade
+changes one of these versions.
 
 ---
 

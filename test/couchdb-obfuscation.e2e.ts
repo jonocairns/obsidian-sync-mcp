@@ -3,10 +3,11 @@
  * #10) against a real, throwaway CouchDB. Destructive: drops and recreates
  * its two test databases — never point it at a real vault.
  *
- * Run: npm run test:couchdb  (starts against localhost:5985 by default)
+ * Run: pnpm test:couchdb  (starts against localhost:5985 by default)
  *
  *   docker run -d --name couchdb-obf-test -p 5985:5984 \
- *     -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=test couchdb:3
+ *     -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=test \
+ *     couchdb:3@sha256:9ea24cbd76522fe845d1c32c7fd1dcfc8a3ba73dcc4817d62f8a7f7f1dfaffe3
  *
  * Override with TEST_COUCHDB_URL / TEST_COUCHDB_USER / TEST_COUCHDB_PASSWORD.
  * (Runs via tsup bundling — plain tsx won't resolve the svelte/pouchdb stubs.)

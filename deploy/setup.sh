@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=deploy/mcp-image.env
+. "$SCRIPT_DIR/mcp-image.env"
+: "${MCP_IMAGE:?deploy/mcp-image.env must define an immutable MCP_IMAGE}"
+
 echo "=== Obsidian Sync MCP — Fly.io Setup ==="
 echo ""
 
@@ -29,9 +34,9 @@ read -r DEPLOY_TYPE
 DEPLOY_TYPE="${DEPLOY_TYPE:-1}"
 
 if [ "$DEPLOY_TYPE" = "2" ]; then
-    DEPLOY_DIR="$(dirname "$0")/mcp-only"
+    DEPLOY_DIR="$SCRIPT_DIR/mcp-only"
 else
-    DEPLOY_DIR="$(dirname "$0")/mcp-with-db"
+    DEPLOY_DIR="$SCRIPT_DIR/mcp-with-db"
 fi
 
 # Ask for vault name
@@ -90,6 +95,7 @@ fi
 
 echo ""
 echo "Deploying..."
+echo "MCP image: $MCP_IMAGE"
 echo ""
 
 # Launch app
@@ -103,19 +109,20 @@ APP_NAME=$(grep "^app " fly.toml | sed "s/app = ['\"]*//" | sed "s/['\"]//g" | t
 fly ips allocate-v4 --shared 2>/dev/null || true
 fly ips allocate-v6 2>/dev/null || true
 
-# Set secrets (each value quoted to handle spaces in passphrases/vault names)
-fly secrets set \
-    "COUCHDB_USER=$COUCHDB_USER" \
-    "COUCHDB_PASSWORD=$COUCHDB_PASSWORD" \
-    "COUCHDB_DATABASE=$COUCHDB_DATABASE" \
-    "MCP_AUTH_TOKEN=$MCP_AUTH_TOKEN" \
-    "VAULT_NAME=$VAULT_NAME" \
-    "BASE_URL=https://${APP_NAME}.fly.dev" \
-    ${COUCHDB_URL:+"COUCHDB_URL=$COUCHDB_URL"} \
-    ${LIVESYNC_PASSWORD:+"LIVESYNC_USER=livesync"} \
-    ${LIVESYNC_PASSWORD:+"LIVESYNC_PASSWORD=$LIVESYNC_PASSWORD"} \
-    ${PASSPHRASE:+"COUCHDB_PASSPHRASE=$PASSPHRASE"} \
-    $([ "$OBFUSCATE_PROPERTIES" = "y" ] && echo "COUCHDB_OBFUSCATE_PROPERTIES=true")
+# Set secrets without word-splitting passphrases or vault names.
+FLY_SECRETS=(
+    "COUCHDB_USER=$COUCHDB_USER"
+    "COUCHDB_PASSWORD=$COUCHDB_PASSWORD"
+    "COUCHDB_DATABASE=$COUCHDB_DATABASE"
+    "MCP_AUTH_TOKEN=$MCP_AUTH_TOKEN"
+    "VAULT_NAME=$VAULT_NAME"
+    "BASE_URL=https://${APP_NAME}.fly.dev"
+)
+[ -n "$COUCHDB_URL" ] && FLY_SECRETS+=("COUCHDB_URL=$COUCHDB_URL")
+[ -n "$LIVESYNC_PASSWORD" ] && FLY_SECRETS+=("LIVESYNC_USER=livesync" "LIVESYNC_PASSWORD=$LIVESYNC_PASSWORD")
+[ -n "$PASSPHRASE" ] && FLY_SECRETS+=("COUCHDB_PASSPHRASE=$PASSPHRASE")
+[ "$OBFUSCATE_PROPERTIES" = "y" ] && FLY_SECRETS+=("COUCHDB_OBFUSCATE_PROPERTIES=true")
+fly secrets set "${FLY_SECRETS[@]}"
 
 # Create volume for persistent data
 REGION=$(grep "primary_region" fly.toml | sed "s/.*= *['\"]*//" | sed "s/['\"].*//")
@@ -126,7 +133,7 @@ else
 fi
 
 # Deploy
-fly deploy
+fly deploy --build-arg "MCP_IMAGE=$MCP_IMAGE"
 
 # Ensure single machine (auth state is in-memory, multiple machines break OAuth)
 fly scale count 1 -y 2>/dev/null || true
@@ -156,7 +163,7 @@ if [ "$DEPLOY_TYPE" != "2" ]; then
     echo "Some maintenance operations in the plugin require admin credentials."
 
     # Generate Setup URIs for easy Obsidian configuration
-    SETUP_SCRIPT="$(dirname "$0")/../generate-setup-uri.mjs"
+    SETUP_SCRIPT="$SCRIPT_DIR/generate-setup-uri.mjs"
     URI_PASS=$(hostname="https://${APP_NAME}.fly.dev:5984" \
         username="$COUCHDB_USER" password="$COUCHDB_PASSWORD" \
         database="$COUCHDB_DATABASE" passphrase="$PASSPHRASE" \

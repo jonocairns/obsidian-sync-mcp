@@ -10,8 +10,8 @@ text, folder-filtered body text, an exact phrase, and a broad all-word query.
 Install dependencies under Node 22.14+ or Node 24, then run:
 
 ```bash
-BENCH_NOTES=100000 BENCH_QUERIES=120 npm run benchmark:search
-BENCH_NOTES=100000 BENCH_QUERIES=120 BENCH_ENCRYPTED=true npm run benchmark:search
+BENCH_NOTES=100000 BENCH_QUERIES=120 pnpm benchmark:search
+BENCH_NOTES=100000 BENCH_QUERIES=120 BENCH_ENCRYPTED=true pnpm benchmark:search
 ```
 
 Set `BENCH_OUTPUT` to save the emitted JSON. The committed artifacts were
@@ -24,8 +24,9 @@ docker run --rm --network none \
   -e BENCH_QUERIES=120 \
   -e BENCH_ENCRYPTED=true \
   -e BENCH_OUTPUT=/workspace/benchmarks/results/node22-amd64-100000-encrypted.json \
-  -v "$PWD:/workspace" -w /workspace node:22-slim \
-  npm run benchmark:search
+  -v "$PWD:/workspace" -w /workspace \
+  node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 \
+  corepack pnpm benchmark:search
 ```
 
 ## Reference results

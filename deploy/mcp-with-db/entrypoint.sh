@@ -7,17 +7,25 @@ COUCH_PID=$!
 
 # Wait for CouchDB to be ready
 echo "Waiting for CouchDB..."
-for i in $(seq 1 30); do
+COUCH_READY=false
+for _attempt in $(seq 1 30); do
     if curl -s -o /dev/null -w "%{http_code}" http://localhost:5984/ 2>/dev/null | grep -qE "^[2-4]"; then
         echo "CouchDB is ready."
+        COUCH_READY=true
         break
     fi
     sleep 1
 done
+if [ "$COUCH_READY" != "true" ]; then
+    echo "ERROR: CouchDB did not become ready within 30 seconds."
+    exit 1
+fi
 
 # Admin credentials
 DB=${COUCHDB_DATABASE:-obsidian}
-if ! printf '%s' "$DB" | grep -qE '^[a-z][a-z0-9_$()+/-]*$'; then
+# The dollar sign below is a literal allowed CouchDB database character.
+# shellcheck disable=SC2016
+if ! printf '%s' "$DB" | grep -qE '^[a-z][a-z0-9_$()+-]*$'; then
     echo "ERROR: COUCHDB_DATABASE contains invalid characters: $DB"
     exit 1
 fi
@@ -25,23 +33,36 @@ ADMIN_USER=${COUCHDB_USER:-admin}
 ADMIN_PASS=${COUCHDB_PASSWORD}
 
 if [ -z "$ADMIN_PASS" ]; then
-    echo "WARNING: COUCHDB_PASSWORD not set."
+    echo "ERROR: COUCHDB_PASSWORD must be set."
+    exit 1
 fi
 
 # Create database if it doesn't exist
-if [ -n "$ADMIN_PASS" ]; then
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:5984/$DB")
-    if [ "$HTTP_CODE" = "404" ]; then
-        echo "Creating database: $DB"
-        curl -s -u "$ADMIN_USER:$ADMIN_PASS" -X PUT "http://localhost:5984/$DB"
-    else
-        echo "Database $DB already exists."
-    fi
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -u "$ADMIN_USER:$ADMIN_PASS" "http://localhost:5984/$DB")
+if [ "$HTTP_CODE" = "404" ]; then
+    echo "Creating database: $DB"
+    curl --fail --silent --show-error -u "$ADMIN_USER:$ADMIN_PASS" -X PUT "http://localhost:5984/$DB" >/dev/null
+elif [ "$HTTP_CODE" = "200" ]; then
+    echo "Database $DB already exists."
+else
+    echo "ERROR: CouchDB returned HTTP $HTTP_CODE while checking database $DB."
+    exit 1
 fi
 
 # Optional: create a non-admin LiveSync user
 LIVESYNC_USER=${LIVESYNC_USER:-}
 LIVESYNC_PASS=${LIVESYNC_PASSWORD:-}
+
+if { [ -n "$LIVESYNC_USER" ] && [ -z "$LIVESYNC_PASS" ]; } || \
+   { [ -z "$LIVESYNC_USER" ] && [ -n "$LIVESYNC_PASS" ]; }; then
+    echo "ERROR: LIVESYNC_USER and LIVESYNC_PASSWORD must be set together."
+    exit 1
+fi
+
+if [ -n "$LIVESYNC_USER" ] && ! printf '%s' "$LIVESYNC_USER" | grep -qE '^[A-Za-z0-9._-]+$'; then
+    echo "ERROR: LIVESYNC_USER must contain only letters, numbers, dots, underscores, or hyphens."
+    exit 1
+fi
 
 if [ -n "$LIVESYNC_USER" ] && [ -n "$LIVESYNC_PASS" ]; then
     # Reject control characters in credentials (prevents JSON injection)
@@ -69,7 +90,7 @@ if [ -n "$LIVESYNC_USER" ] && [ -n "$LIVESYNC_PASS" ]; then
 
     SAFE_ADMIN=$(printf '%s' "$ADMIN_USER" | sed 's/\\/\\\\/g; s/"/\\"/g')
     SECURITY="{\"admins\":{\"names\":[\"${SAFE_ADMIN}\"],\"roles\":[]},\"members\":{\"names\":[\"${SAFE_USER}\"],\"roles\":[]}}"
-    curl -s -o /dev/null -u "$ADMIN_USER:$ADMIN_PASS" -X PUT \
+    curl --fail --silent --show-error -o /dev/null -u "$ADMIN_USER:$ADMIN_PASS" -X PUT \
         "http://localhost:5984/$DB/_security" \
         -H "Content-Type: application/json" \
         -d "$SECURITY"
@@ -78,11 +99,26 @@ else
     echo "No LIVESYNC_USER set — LiveSync will use admin credentials."
 fi
 
-# Handle shutdown: kill CouchDB when MCP exits
-trap "kill $COUCH_PID 2>/dev/null" EXIT
+shutdown() {
+    trap - EXIT INT TERM
+    if [ -n "${MCP_PID:-}" ]; then
+        kill "$MCP_PID" 2>/dev/null || true
+    fi
+    kill "$COUCH_PID" 2>/dev/null || true
+    wait "$COUCH_PID" 2>/dev/null || true
+}
+trap shutdown EXIT INT TERM
 
-# Start MCP server in foreground
+# Run the MCP process as the unprivileged CouchDB user while this supervisor
+# remains PID 1 and forwards shutdown to both services.
 export COUCHDB_URL="${COUCHDB_URL:-http://localhost:5984}"
 export DATA_DIR="${DATA_DIR:-/opt/couchdb/data/.mcp}"
 echo "Starting MCP server..."
-node /app/dist/main.js
+setpriv --reuid=couchdb --regid=couchdb --clear-groups node /app/dist/main.js &
+MCP_PID=$!
+set +e
+wait "$MCP_PID"
+MCP_STATUS=$?
+set -e
+shutdown
+exit "$MCP_STATUS"

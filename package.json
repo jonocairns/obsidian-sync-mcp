@@ -4,6 +4,7 @@
     "version": "0.8.0",
     "description": "Give any AI agent access to your Obsidian vault over MCP",
     "type": "module",
+    "packageManager": "pnpm@11.22.0",
     "license": "MIT",
     "repository": {
         "type": "git",
@@ -29,7 +30,7 @@
         "LICENSE"
     ],
     "scripts": {
-        "lint": "npx --yes oxlint@latest --deny-warnings src/",
+        "lint": "oxlint --deny-warnings src/",
         "build": "tsup",
         "start": "node dist/main.js",
         "dev": "tsx src/main.ts",
@@ -43,6 +44,8 @@
         "diff-match-patch": "^1.0.5",
         "fastmcp": "^4.16.12",
         "fflate": "^0.8.2",
+        "hono": "^4.13.2",
+        "idb": "^8.0.3",
         "minimatch": "^10",
         "octagonal-wheels": "^0.1.39",
         "pouchdb-adapter-http": "^9.0.0",
@@ -60,6 +63,7 @@
     },
     "devDependencies": {
         "@types/node": "^22",
+        "oxlint": "1.79.0",
         "tsup": "^8",
         "tsx": "^4",
         "typescript": "^5"
