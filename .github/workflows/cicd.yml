@@ -26,6 +26,7 @@ jobs:
       - run: nix flake check --no-update-lock-file
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: shellcheck -x .githooks/pre-commit .githooks/pre-push deploy/setup.sh deploy/mcp-with-db/entrypoint.sh scripts/ci/docker-smoke.sh
 
   audit:
     runs-on: ubuntu-latest
@@ -133,54 +134,7 @@ jobs:
           installer-version: 2.35.1
           extra-conf: experimental-features = nix-command flakes
       - name: Build and smoke-test container variants
-        run: |
-          set -o pipefail
-          MCP_IMAGE="$(sed -n 's/^MCP_IMAGE=//p' deploy/mcp-image.env)"
-          : "${MCP_IMAGE:?deploy/mcp-image.env must define MCP_IMAGE}"
-          docker build --tag obsidian-sync-mcp:ci .
-          docker build \
-            --build-arg "MCP_IMAGE=$MCP_IMAGE" \
-            --tag obsidian-sync-mcp:mcp-only-ci \
-            deploy/mcp-only
-          docker build \
-            --build-arg "MCP_IMAGE=$MCP_IMAGE" \
-            --tag obsidian-sync-mcp:combined-ci \
-            deploy/mcp-with-db
-
-          cleanup() {
-            docker rm --force obsidian-sync-mcp-root-ci obsidian-sync-mcp-combined-ci >/dev/null 2>&1 || true
-          }
-          trap cleanup EXIT
-
-          wait_for_healthy() {
-            local container="$1"
-            for _attempt in {1..60}; do
-              status="$(docker inspect --format '{{.State.Health.Status}}' "$container")"
-              if [ "$status" = "healthy" ]; then
-                return 0
-              fi
-              if [ "$status" = "unhealthy" ]; then
-                break
-              fi
-              sleep 2
-            done
-            docker logs "$container"
-            return 1
-          }
-
-          docker run --detach --name obsidian-sync-mcp-root-ci \
-            --env MCP_AUTH_TOKEN=ci-test-token \
-            --env VAULT_PATH=/data/vault \
-            obsidian-sync-mcp:ci \
-            sh -c 'mkdir -p /data/vault && exec node dist/main.js'
-          wait_for_healthy obsidian-sync-mcp-root-ci
-
-          docker run --detach --name obsidian-sync-mcp-combined-ci \
-            --env COUCHDB_USER=admin \
-            --env COUCHDB_PASSWORD=ci-test-database-password \
-            --env MCP_AUTH_TOKEN=ci-test-token \
-            obsidian-sync-mcp:combined-ci
-          wait_for_healthy obsidian-sync-mcp-combined-ci
+        run: scripts/ci/docker-smoke.sh
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')

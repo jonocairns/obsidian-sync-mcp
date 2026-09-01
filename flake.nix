@@ -59,6 +59,7 @@
               nodejs
               pkgs.pnpm
               pkgs.docker-client
+              pkgs.shellcheck
             ];
           };
         in

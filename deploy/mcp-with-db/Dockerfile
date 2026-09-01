@@ -31,7 +31,7 @@ RUN chmod +x /app/entrypoint.sh
 EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["node", "-e", "const s=require('node:net').connect(8787,'127.0.0.1',()=>s.end());s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),4000).unref()"]
+    CMD ["node", "--input-type=module", "--eval", "const response = await fetch('http://127.0.0.1:8787/health'); if (!response.ok) process.exit(1)"]
 
 ENTRYPOINT []
 CMD ["/app/entrypoint.sh"]
