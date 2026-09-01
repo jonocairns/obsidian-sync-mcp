@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.1
+
+### Security
+- Harden container and Fly deployment defaults with reviewed digest-pinned images, localhost-only Compose ports, an unprivileged MCP process, stricter credential validation, fail-fast startup, and HTTP health checks.
+- Enforce a seven-day dependency release cooldown and an exact allowlist for dependency lifecycle scripts.
+
+### Build and CI
+- Switch from npm to pnpm 11 and add Nix flake and direnv support for reproducible Node 22 and Node 24 development and CI environments.
+- Pin GitHub Actions and the CouchDB service image by digest, lint deployment scripts with ShellCheck, and smoke-test the production, MCP-only, and combined CouchDB container variants before release.
+
 ## 0.8.0
 
 ### Features
