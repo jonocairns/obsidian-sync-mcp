@@ -441,6 +441,37 @@ the latter uses its bundled prebuild. Any new unreviewed build script fails the
 install. Review and update `allowBuilds` deliberately when a dependency upgrade
 changes one of these versions.
 
+### Commits and releases
+
+This repository uses Conventional Commit prefixes to calculate releases:
+
+| Prefix | Version effect |
+| --- | --- |
+| `fix:` or `perf:` | Patch |
+| `feat:` | Minor |
+| Any supported prefix with `!` or a `BREAKING CHANGE:` footer | Minor before 1.0; major from 1.0 onward |
+| `docs:`, `test:`, `ci:`, `build:`, `style:`, `refactor:`, `revert:`, `deps:`, ordinary `chore:` | No release by themselves |
+
+Scopes are encouraged when they add context. User-visible dependency,
+container, or delivery fixes must use an appropriate fix prefix, such as
+`fix(deps):`, `fix(container):`, or `fix(delivery):`; a plain `chore:` will not
+publish them.
+
+After every push to `main`, all CI gates run before Release Please can create or
+update its release PR. Merge that PR when the accumulated changes are ready to
+ship. The merged commit runs the same CI gates again; only after they pass does
+Release Please create the `vX.Y.Z` tag and initial GitHub Release. The workflow
+then verifies the tag against `package.json`, uploads the package archive to the
+existing release, publishes the stable multi-architecture GHCR image, and adds
+its immutable digest reference to the release notes. npm publication is not
+enabled. Updates to `deploy/mcp-image.env` or README digest pins remain separate,
+reviewed, non-releasing pull requests.
+
+Repository administrators must enable **Settings → Actions → General → Workflow
+permissions → Allow GitHub Actions to create and approve pull requests** so the
+repository `GITHUB_TOKEN` can maintain the release PR. Keep squash-merge commit
+titles Conventional because Release Please reads the commit history on `main`.
+
 ---
 
 ## License
