@@ -158,24 +158,28 @@ jobs:
     outputs:
       release_context: ${{ steps.context.outputs.release-context }}
       release_created: ${{ steps.github-release.outputs.release_created }}
-      release_sha: ${{ steps.github-release.outputs.sha || steps.context.outputs.release-sha }}
-      tag_name: ${{ steps.github-release.outputs.tag_name || steps.context.outputs.tag-name }}
+      release_sha: ${{ steps.github-release.outputs.sha }}
+      tag_name: ${{ steps.github-release.outputs.tag_name }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - id: github-release
-        name: Maintain release PR or create release
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
       - id: context
-        name: Detect release or recovery context
-        if: always()
+        name: Check release context
         shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
-          RELEASE_CREATED: ${{ steps.github-release.outputs.release_created }}
-          RELEASE_SHA: ${{ steps.github-release.outputs.sha }}
-          RELEASE_TAG: ${{ steps.github-release.outputs.tag_name }}
-        run: scripts/ci/release-artifact.sh detect
+        run: scripts/ci/release-context.sh
+      - name: Create or update release PR
+        if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          skip-github-release: true
+      - id: github-release
+        name: Create tag and GitHub Release
+        if: steps.context.outputs.create-release == 'true'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          skip-github-pull-request: true
 
   release-artifact:
     if: >-
@@ -217,7 +221,7 @@ jobs:
         env:
           EXPECTED_RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
           GH_TOKEN: ${{ github.token }}
-        run: scripts/ci/release-artifact.sh verify
+        run: scripts/ci/verify-release-artifact.sh
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm pack --dry-run
@@ -226,7 +230,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-        run: scripts/ci/release-artifact.sh upload "$RELEASE_TAG"
+        run: scripts/ci/upload-release-asset.sh "$RELEASE_TAG"
 
   publish-docker:
     if: needs.release-artifact.outputs.stable == 'true'

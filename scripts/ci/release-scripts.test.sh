@@ -5,7 +5,9 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf "$test_root"' EXIT
 
-artifact_script="$repo_root/scripts/ci/release-artifact.sh"
+context_script="$repo_root/scripts/ci/release-context.sh"
+verify_script="$repo_root/scripts/ci/verify-release-artifact.sh"
+upload_script="$repo_root/scripts/ci/upload-release-asset.sh"
 publication_script="$repo_root/scripts/ci/check-container-publication.sh"
 notes_script="$repo_root/scripts/ci/update-release-container-notes.sh"
 
@@ -74,17 +76,40 @@ docker() {
 export -f docker
 
 sha=1111111111111111111111111111111111111111
+other_sha=2222222222222222222222222222222222222222
 context_output="$test_root/context-output"
-EXPECTED_SHA=$sha \
-    RELEASE_CREATED=true \
-    RELEASE_TAG=v0.8.2 \
-    RELEASE_SHA=$sha \
-    GITHUB_REPOSITORY=owner/repo \
-    GITHUB_OUTPUT=$context_output \
-    "$artifact_script" detect >/dev/null
+
+run_context() {
+    : >"$context_output"
+    EXPECTED_SHA=$sha \
+        GITHUB_REPOSITORY=jonocairns/obsidian-sync-mcp \
+        GITHUB_OUTPUT=$context_output \
+        MOCK_MAIN_SHA=${MOCK_MAIN_SHA:-$sha} \
+        MOCK_PENDING_PR=${MOCK_PENDING_PR:-} \
+        MOCK_TAGGED_PR=${MOCK_TAGGED_PR:-} \
+        "$context_script" >/dev/null
+}
+
+MOCK_MAIN_SHA=$sha MOCK_PENDING_PR='' MOCK_TAGGED_PR='' run_context
+assert_line 'update-pr=true' "$context_output"
+assert_line 'create-release=false' "$context_output"
+assert_line 'release-context=false' "$context_output"
+
+MOCK_MAIN_SHA=$sha MOCK_PENDING_PR=42 MOCK_TAGGED_PR='' run_context
+assert_line 'create-release=true' "$context_output"
 assert_line 'release-context=true' "$context_output"
-assert_line 'tag-name=v0.8.2' "$context_output"
-assert_line "release-sha=$sha" "$context_output"
+
+MOCK_MAIN_SHA=$sha MOCK_PENDING_PR='' MOCK_TAGGED_PR=42 run_context
+assert_line 'create-release=false' "$context_output"
+assert_line 'release-context=true' "$context_output"
+
+MOCK_MAIN_SHA=$other_sha MOCK_PENDING_PR='' MOCK_TAGGED_PR='' run_context
+assert_line 'update-pr=false' "$context_output"
+
+if EXPECTED_SHA=invalid GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$context_output" \
+    "$context_script" >/dev/null 2>&1; then
+    fail 'release context accepted an invalid commit SHA'
+fi
 
 verify_repo="$test_root/verify"
 mkdir -p "$verify_repo"
@@ -106,7 +131,7 @@ verify_output="$test_root/verify-output"
         GITHUB_OUTPUT=$verify_output \
         EXPECTED_RELEASE_SHA=$verify_sha \
         MOCK_RELEASE_EXISTS=true \
-        "$artifact_script" verify >/dev/null
+        "$verify_script" >/dev/null
 )
 assert_line 'tag_name=v0.8.2' "$verify_output"
 assert_line 'stable=true' "$verify_output"
@@ -118,7 +143,7 @@ if (
         GITHUB_REPOSITORY=owner/repo \
         GITHUB_OUTPUT=$verify_output \
         MOCK_RELEASE_EXISTS=true \
-        "$artifact_script" verify >/dev/null 2>&1
+        "$verify_script" >/dev/null 2>&1
 ); then
     fail 'release verification accepted a tag/package mismatch'
 fi
@@ -135,7 +160,7 @@ git -C "$verify_repo" tag v0.9.0-rc.1
         GITHUB_REPOSITORY=owner/repo \
         GITHUB_OUTPUT=$verify_output \
         MOCK_RELEASE_EXISTS=true \
-        "$artifact_script" verify >/dev/null
+        "$verify_script" >/dev/null
 )
 assert_line 'stable=false' "$verify_output"
 
@@ -148,7 +173,7 @@ upload_log="$test_root/upload-log"
     GITHUB_REPOSITORY=owner/repo \
         MOCK_RELEASE_EXISTS=true \
         MOCK_GH_LOG=$upload_log \
-        "$artifact_script" upload v0.8.2
+        "$upload_script" v0.8.2
 )
 grep -Fq 'release upload v0.8.2 obsidian-sync-mcp-0.8.2.tgz --repo owner/repo --clobber' "$upload_log" \
     || fail 'release upload was not idempotent'
@@ -156,7 +181,7 @@ touch "$upload_dir/extra.tgz"
 if (
     cd "$upload_dir"
     GITHUB_REPOSITORY=owner/repo MOCK_RELEASE_EXISTS=true MOCK_GH_LOG=$upload_log \
-        "$artifact_script" upload v0.8.2 >/dev/null 2>&1
+        "$upload_script" v0.8.2 >/dev/null 2>&1
 ); then
     fail 'release upload accepted multiple package archives'
 fi
