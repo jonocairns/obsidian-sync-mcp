@@ -26,7 +26,16 @@ jobs:
       - run: nix flake check --no-update-lock-file
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: shellcheck -x .githooks/pre-commit .githooks/pre-push deploy/setup.sh deploy/mcp-with-db/entrypoint.sh scripts/ci/docker-smoke.sh scripts/ci/update-release-container-notes.sh
+      - name: Check shell scripts
+        run: |
+          shellcheck -x \
+            .githooks/pre-commit \
+            .githooks/pre-push \
+            deploy/setup.sh \
+            deploy/mcp-with-db/entrypoint.sh \
+            scripts/ci/*.sh
+      - name: Test release scripts
+        run: scripts/ci/release-scripts.test.sh
 
   audit:
     runs-on: ubuntu-latest
@@ -152,36 +161,14 @@ jobs:
       release_sha: ${{ steps.github-release.outputs.sha }}
       tag_name: ${{ steps.github-release.outputs.tag_name }}
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       - id: context
         name: Check release context
+        shell: bash
         env:
           EXPECTED_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
-          if [[ "$MAIN_SHA" == "$EXPECTED_SHA" ]]; then
-            echo "update-pr=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "update-pr=false" >>"$GITHUB_OUTPUT"
-            echo "main advanced to $MAIN_SHA; its own CI run will update the release PR."
-          fi
-
-          pending_release_pr="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_SHA}/pulls" \
-            --jq ".[] | select(.base.ref == \"main\" and .merge_commit_sha == \"${EXPECTED_SHA}\" and any(.labels[]?; .name == \"autorelease: pending\")) | .number")"
-          tagged_release_pr="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${EXPECTED_SHA}/pulls" \
-            --jq ".[] | select(.base.ref == \"main\" and .merge_commit_sha == \"${EXPECTED_SHA}\" and any(.labels[]?; .name == \"autorelease: tagged\")) | .number")"
-          if [[ -n "$pending_release_pr" ]]; then
-            echo "create-release=true" >>"$GITHUB_OUTPUT"
-            echo "release-context=true" >>"$GITHUB_OUTPUT"
-            echo "Commit $EXPECTED_SHA merged pending Release Please PR #$pending_release_pr."
-          elif [[ -n "$tagged_release_pr" ]]; then
-            echo "create-release=false" >>"$GITHUB_OUTPUT"
-            echo "release-context=true" >>"$GITHUB_OUTPUT"
-            echo "Commit $EXPECTED_SHA merged tagged Release Please PR #$tagged_release_pr; recovering downstream release work."
-          else
-            echo "create-release=false" >>"$GITHUB_OUTPUT"
-            echo "release-context=false" >>"$GITHUB_OUTPUT"
-          fi
+        run: scripts/ci/release-context.sh
       - name: Create or update release PR
         if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
@@ -234,36 +221,7 @@ jobs:
         env:
           EXPECTED_RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
           GH_TOKEN: ${{ github.token }}
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            RELEASE_TAG="$GITHUB_REF_NAME"
-          else
-            RELEASE_TAG="v${PACKAGE_VERSION}"
-          fi
-          if [[ "$RELEASE_TAG" != "v${PACKAGE_VERSION}" ]]; then
-            echo "::error::Tag $RELEASE_TAG does not match package.json version $PACKAGE_VERSION"
-            exit 1
-          fi
-          TAG_SHA="$(git rev-list -n 1 "$RELEASE_TAG")"
-          if [[ "$TAG_SHA" != "$(git rev-parse HEAD)" ]]; then
-            echo "::error::Tag $RELEASE_TAG does not point to the checked commit"
-            exit 1
-          fi
-          if [[ -n "$EXPECTED_RELEASE_SHA" && "$(git rev-parse HEAD)" != "$EXPECTED_RELEASE_SHA" ]]; then
-            echo "::error::Tag $RELEASE_TAG does not point to the Release Please output SHA"
-            exit 1
-          fi
-          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null; then
-            echo "::error::Expected GitHub Release $RELEASE_TAG does not exist"
-            exit 1
-          fi
-          echo "tag_name=$RELEASE_TAG" >>"$GITHUB_OUTPUT"
-          if [[ "$RELEASE_TAG" == *rc* ]]; then
-            echo "stable=false" >>"$GITHUB_OUTPUT"
-          else
-            echo "stable=true" >>"$GITHUB_OUTPUT"
-          fi
+        run: scripts/ci/verify-release-artifact.sh
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm pack --dry-run
@@ -272,16 +230,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
-        run: |
-          shopt -s nullglob
-          packages=(*.tgz)
-          if (( ${#packages[@]} != 1 )); then
-            echo "::error::Expected exactly one .tgz package, found ${#packages[@]}"
-            exit 1
-          fi
-          gh release upload "$RELEASE_TAG" "${packages[0]}" \
-            --repo "$GITHUB_REPOSITORY" \
-            --clobber
+        run: scripts/ci/upload-release-asset.sh "$RELEASE_TAG"
 
   publish-docker:
     if: needs.release-artifact.outputs.stable == 'true'
@@ -315,53 +264,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release-artifact.outputs.tag_name }}
-        run: |
-          if ! release_body="$(gh release view "$RELEASE_TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --json body \
-            --jq '.body // ""')"; then
-            echo "::error::Expected GitHub Release $RELEASE_TAG does not exist"
-            exit 1
-          fi
-
-          image_tag="ghcr.io/${GITHUB_REPOSITORY}:${RELEASE_TAG}"
-          inspect_error="$(mktemp)"
-          trap 'rm -f "$inspect_error"' EXIT
-          if manifest_json="$(docker buildx imagetools inspect "$image_tag" \
-            --format '{{json .Manifest}}' 2>"$inspect_error")"; then
-            if ! existing_digest="$(node -e '
-              const manifest = JSON.parse(require("fs").readFileSync(0, "utf8"));
-              const platforms = new Set((manifest.manifests || []).map(
-                entry => `${entry.platform?.os}/${entry.platform?.architecture}`
-              ));
-              if (!platforms.has("linux/amd64") || !platforms.has("linux/arm64")) {
-                throw new Error("version tag is not a linux/amd64 + linux/arm64 image index");
-              }
-              if (!/^sha256:[0-9a-f]{64}$/.test(manifest.digest || "")) {
-                throw new Error("registry returned an invalid image-index digest");
-              }
-              process.stdout.write(manifest.digest);
-            ' <<<"$manifest_json")"; then
-              echo "::error::Existing GHCR tag $image_tag is not the expected multi-architecture image"
-              exit 1
-            fi
-            echo "publish=false" >>"$GITHUB_OUTPUT"
-            echo "digest=$existing_digest" >>"$GITHUB_OUTPUT"
-            if grep -Fq "${image_tag}@${existing_digest}" <<<"$release_body"; then
-              echo "document=false" >>"$GITHUB_OUTPUT"
-              echo "Release already records the published multi-architecture image."
-            else
-              echo "document=true" >>"$GITHUB_OUTPUT"
-              echo "Recovering release notes from existing GHCR digest $existing_digest."
-            fi
-          elif grep -Eiq 'manifest unknown|name unknown|not found' "$inspect_error"; then
-            echo "publish=true" >>"$GITHUB_OUTPUT"
-            echo "document=true" >>"$GITHUB_OUTPUT"
-          else
-            cat "$inspect_error" >&2
-            echo "::error::Could not determine whether GHCR tag $image_tag already exists"
-            exit 1
-          fi
+        run: scripts/ci/check-container-publication.sh
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
         if: steps.publication.outputs.publish == 'true'
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
