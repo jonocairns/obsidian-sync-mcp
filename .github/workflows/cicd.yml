@@ -26,7 +26,16 @@ jobs:
       - run: nix flake check --no-update-lock-file
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: shellcheck -x .githooks/pre-commit .githooks/pre-push deploy/setup.sh deploy/mcp-with-db/entrypoint.sh scripts/ci/docker-smoke.sh
+      - name: Check shell scripts
+        run: |
+          shellcheck -x \
+            .githooks/pre-commit \
+            .githooks/pre-push \
+            deploy/setup.sh \
+            deploy/mcp-with-db/entrypoint.sh \
+            scripts/ci/*.sh
+      - name: Test release scripts
+        run: scripts/ci/release-scripts.test.sh
 
   audit:
     runs-on: ubuntu-latest
@@ -136,57 +145,107 @@ jobs:
       - name: Build and smoke-test container variants
         run: scripts/ci/docker-smoke.sh
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
+  release-please:
+    # PR maintenance may use the current main head only after that head's run
+    # has passed every gate. Release creation is stricter: it runs only when
+    # this exact successful SHA merged the pending Release Please PR.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint, audit, build, test, test-e2e, test-couchdb, docker-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
+    outputs:
+      release_context: ${{ steps.context.outputs.release-context }}
+      release_created: ${{ steps.github-release.outputs.release_created }}
+      release_sha: ${{ steps.github-release.outputs.sha }}
+      tag_name: ${{ steps.github-release.outputs.tag_name }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - id: context
+        name: Check release context
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/release-context.sh
+      - name: Create or update release PR
+        if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          skip-github-release: true
+      - id: github-release
+        name: Create tag and GitHub Release
+        if: steps.context.outputs.create-release == 'true'
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        with:
+          skip-github-pull-request: true
+
+  release-artifact:
+    if: >-
+      always() &&
+      needs.lint.result == 'success' &&
+      needs.audit.result == 'success' &&
+      needs.build.result == 'success' &&
+      needs.test.result == 'success' &&
+      needs.test-e2e.result == 'success' &&
+      needs.test-couchdb.result == 'success' &&
+      needs.docker-smoke.result == 'success' &&
+      (
+        startsWith(github.ref, 'refs/tags/v') ||
+        needs.release-please.outputs.release_context == 'true'
+      )
+    needs: [lint, audit, build, test, test-e2e, test-couchdb, docker-smoke, release-please]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-asset-${{ needs.release-please.outputs.tag_name || github.ref_name || github.sha }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    outputs:
+      stable: ${{ steps.release.outputs.stable }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
+          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
           extra-conf: experimental-features = nix-command flakes
-      - name: Verify tag matches package version
-        run: |
-          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
-          test "${GITHUB_REF_NAME}" = "v${PACKAGE_VERSION}"
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: package
-      - name: Extract changelog
-        if: ${{ !contains(github.ref_name, 'rc') }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          awk "/^## ${VERSION}/{found=1; next} /^## /{if(found) exit} found" CHANGELOG.md > release-notes.md
-      - name: Create GitHub Release
+      - id: release
+        name: Verify tag and GitHub Release
+        env:
+          EXPECTED_RELEASE_SHA: ${{ needs.release-please.outputs.release_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci/verify-release-artifact.sh
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm pack --dry-run
+      - run: pnpm pack
+      - name: Upload package to existing GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [[ "${{ github.ref_name }}" == *rc* ]]; then
-            gh release create "${{ github.ref_name }}" \
-              --title "${{ github.ref_name }}" \
-              --generate-notes \
-              --prerelease \
-              *.tgz
-          else
-            gh release create "${{ github.ref_name }}" \
-              --title "${{ github.ref_name }}" \
-              --notes-file release-notes.md \
-              *.tgz
-          fi
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: scripts/ci/upload-release-asset.sh "$RELEASE_TAG"
 
   publish-docker:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, 'rc')
-    needs: release
+    if: needs.release-artifact.outputs.stable == 'true'
+    needs: release-artifact
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-docker-${{ needs.release-artifact.outputs.tag_name }}
+      cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
+          ref: ${{ needs.release-artifact.outputs.tag_name }}
           submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
@@ -199,14 +258,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - id: publication
+        name: Check for an existing multi-architecture image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-artifact.outputs.tag_name }}
+        run: scripts/ci/check-container-publication.sh
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        if: steps.publication.outputs.publish == 'true'
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build-push
+        if: steps.publication.outputs.publish == 'true'
         with:
           context: .
           file: Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}:${{ needs.release-artifact.outputs.tag_name }}
             ghcr.io/${{ github.repository }}:latest
+      - name: Record immutable container reference in GitHub Release
+        if: steps.publication.outputs.document == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_DIGEST: ${{ steps.build-push.outputs.digest || steps.publication.outputs.digest }}
+          RELEASE_TAG: ${{ needs.release-artifact.outputs.tag_name }}
+        run: scripts/ci/update-release-container-notes.sh "$RELEASE_TAG" "$IMAGE_DIGEST"
