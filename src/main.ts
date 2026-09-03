@@ -16,6 +16,7 @@ import {
     searchIndexStoragePaths,
     type FullTextSearchSetting,
 } from "./full-text-search.js";
+import { ensureDataDirWritable } from "./data-dir.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
 import { resolveMcpStatelessSetting } from "./transport.js";
@@ -139,6 +140,18 @@ try {
 } catch (error) {
     console.error((error as Error).message);
     process.exit(1);
+}
+
+// The search index and OAuth tokens are the only persisted state. Check the
+// directory once, up front, so a volume this process cannot write to fails with
+// the fix instead of an EACCES stack from SQLite or a silent token-save error.
+if (fullTextSetting.enabled || AUTH_TOKEN) {
+    try {
+        await ensureDataDirWritable(baseDataDir);
+    } catch (error) {
+        console.error((error as Error).message);
+        process.exit(1);
+    }
 }
 
 let fullTextIndex: FullTextIndex | undefined;
