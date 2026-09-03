@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+- Fail startup with an actionable message when `DATA_DIR` is not writable. v0.8.1 moved the container to the unprivileged `node` user (uid 1000), so a data volume created by an earlier root-running image left the server in a crash loop on a raw `EACCES` from inside the search index, and auth-token saves failed silently. The check names the directory, its owner, and the one-time `chown`/`chmod` that fixes it; the README documents the upgrade step.
+
 ## 0.8.1
 
 ### Security

@@ -358,6 +358,26 @@ Set transport to **Streamable HTTP**, enter `http://localhost:8787/mcp`, and con
 | Fly.io | `git pull`, enter the relevant `deploy/mcp-*` directory, run `. ../mcp-image.env`, then `fly deploy --build-arg "MCP_IMAGE=$MCP_IMAGE"`. The manifest selects an immutable reviewed image. If you lost the fly.toml, run `fly config save --app your-app-name` first. |
 | Docker | Pull the reviewed version-and-digest pair from the release notes, then restart |
 
+**Upgrading to v0.8.1 or later:** the container now runs as the unprivileged
+`node` user (uid 1000). A `DATA_DIR` volume created by an earlier root-running
+image is owned by root, so the server exits at startup with `Cannot write to
+DATA_DIR`. Hand the volume over once:
+
+```bash
+docker run --rm -v mcp-data:/data alpine chown -R 1000:1000 /data
+```
+
+For a bind mount, `sudo chown -R 1000:1000 <host-path>` instead; on a Fly.io
+machine, `fly ssh console -C "chown -R 1000:1000 /data"`. The index and auth
+tokens survive — only ownership changes.
+
+On Unraid, chown the appdata path mapped to `/data` to Unraid's own account and
+run the container as that account, so the Docker Safe New Permissions tool
+cannot revert it: `chown -R 99:100 /mnt/user/appdata/<share>` from the terminal,
+then add `--user 99:100` to Extra Parameters in the container template (Advanced
+View). This image has no `PUID`/`PGID` entrypoint — `--user` is what selects the
+account.
+
 ---
 
 ## Known limitations
