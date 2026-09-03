@@ -70,6 +70,11 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
     const refreshTokens = new Map<string, TokenRecord>();
     const clients = new Map<string, RegisteredClient>();
 
+    function deletePendingAuth(code: string) {
+        pendingAuths.delete(code);
+        csrfTokens.delete(code);
+    }
+
     function authenticateTokenClient(body: Record<string, string | File>): RegisteredClient | undefined {
         const clientId = body["client_id"];
         if (typeof clientId !== "string") return undefined;
@@ -92,8 +97,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         const now = Date.now();
         for (const [code, pending] of pendingAuths) {
             if (now - pending.createdAt > PENDING_TTL_MS) {
-                pendingAuths.delete(code);
-                csrfTokens.delete(code);
+                deletePendingAuth(code);
             }
         }
     }
@@ -378,7 +382,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                     `Auth: /oauth/token invalid_grant. code_known=${!!pending} ` +
                     `approved=${pending?.approved ?? "n/a"} expired=${pending ? expired : "n/a"}`
                 );
-                if (pending && expired) pendingAuths.delete(code);
+                if (pending && expired) deletePendingAuth(code);
                 return c.json({ error: "invalid_grant" }, 400);
             }
 
@@ -409,7 +413,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 }
             }
 
-            pendingAuths.delete(code);
+            deletePendingAuth(code);
             console.log(`Auth: /oauth/token issuing access token client_id=${pending.clientId}`);
 
             const accessToken = randomBytes(32).toString("hex");
