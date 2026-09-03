@@ -185,6 +185,8 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 
 - Rate limiting with exponential backoff (capped at ~85 min)
 - CSRF tokens rotated on each failed attempt
+- Dynamic client registration supports public (`none`) and confidential (`client_secret_post`) clients; confidential client secrets are enforced for code exchange and refresh
+- Authorization codes and refresh tokens are bound to the authenticated registered client
 - Token persistence to disk (0600 permissions)
 - Periodic cleanup of expired tokens and unused clients
 - Also accepts static `Bearer <MCP_AUTH_TOKEN>` for non-OAuth clients
