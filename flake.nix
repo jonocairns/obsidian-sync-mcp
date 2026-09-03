@@ -58,6 +58,7 @@
             packages = [
               nodejs
               pkgs.pnpm
+              pkgs.gh
               pkgs.docker-client
               pkgs.shellcheck
             ];
