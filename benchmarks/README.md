@@ -7,7 +7,7 @@ text, folder-filtered body text, an exact phrase, and a broad all-word query.
 
 ## Reproduce
 
-Install dependencies under Node 22.14+ or Node 24, then run:
+Install dependencies under Node 24 LTS, then run:
 
 ```bash
 BENCH_NOTES=100000 BENCH_QUERIES=120 pnpm benchmark:search
