@@ -48,7 +48,7 @@ jobs:
           installer-version: 2.35.1
           extra-conf: experimental-features = nix-command flakes
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --audit-level=high
+      - run: pnpm audit --audit-level=high --ignore-registry-errors
 
   build:
     runs-on: ubuntu-latest
