@@ -9,6 +9,18 @@
 - Enforce each dynamically registered OAuth client's declared token-endpoint authentication method for both authorization-code exchange and refresh. Confidential `client_secret_post` clients must now present their issued secret, public clients continue to use PKCE plus refresh-token rotation, and codes and refresh tokens are rejected when presented by a different client.
 - Reject authorization-code exchange until the corresponding password approval succeeds. Codes embedded in the approval form were previously exchangeable by their registered client before the user entered `MCP_AUTH_TOKEN`. Existing OAuth sessions are invalidated once on upgrade because persisted tokens cannot prove that they passed approval; client registrations are retained, so agents can reauthorize without being re-added.
 
+## [0.8.2](https://github.com/jonocairns/obsidian-sync-mcp/compare/v0.8.1...v0.8.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* **auth:** clean up expired OAuth state ([090d419](https://github.com/jonocairns/obsidian-sync-mcp/commit/090d4199def6232a50eeb2b8e387c7dcd04f0166))
+* **auth:** enforce OAuth client and approval contracts ([d48a2ab](https://github.com/jonocairns/obsidian-sync-mcp/commit/d48a2abed67dff86e5c273557584e3ccd0928332))
+* **auth:** enforce OAuth client and approval contracts ([44a494b](https://github.com/jonocairns/obsidian-sync-mcp/commit/44a494bc6f6ab277722ba2ff24f22d3354b39c6b))
+* pin patched fast-uri for dependency audit ([de4ff1f](https://github.com/jonocairns/obsidian-sync-mcp/commit/de4ff1f84dc0264cc7a34df5049ba103e01ef83c))
+* pin patched fast-uri for dependency audit ([a6e89d8](https://github.com/jonocairns/obsidian-sync-mcp/commit/a6e89d80dd59ed775e5a6fad444a78edcd83f4d5))
+* report unwritable data directory at startup ([24f34d4](https://github.com/jonocairns/obsidian-sync-mcp/commit/24f34d4663efe5a6430665b70d25de4ae8a4d2dd))
+
 ## 0.8.1
 
 ### Security
