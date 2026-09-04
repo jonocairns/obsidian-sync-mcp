@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-archive=${1:?usage: package-smoke.sh PACKAGE.tgz}
+archive_input=${1:?usage: package-smoke.sh PACKAGE.tgz}
+archive_dir=$(CDPATH='' cd -- "$(dirname -- "$archive_input")" && pwd)
+archive="$archive_dir/$(basename -- "$archive_input")"
 repo_root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-smoke_dir=$(mktemp -d "$repo_root/.package-smoke.XXXXXX")
+smoke_dir=$(mktemp -d)
 server_pid=
 
 # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
@@ -21,6 +23,16 @@ tar -xzf "$archive" -C "$smoke_dir"
 
 test -f "$smoke_dir/package/dist/main.js"
 test "$(node -p "require('$smoke_dir/package/package.json').bin['obsidian-sync-mcp']")" = "dist/main.js"
+
+# Install exactly the reviewed production graph outside the checkout. This
+# prevents Node from satisfying missing package dependencies via node_modules
+# in the repository while keeping the smoke test independent of the registry.
+cp "$repo_root/pnpm-lock.yaml" "$repo_root/pnpm-workspace.yaml" "$smoke_dir/package/"
+pnpm --dir "$smoke_dir/package" install \
+    --prod \
+    --frozen-lockfile \
+    --offline \
+    --trust-lockfile
 
 PORT=9876 \
 VAULT_PATH="$smoke_dir/vault" \
