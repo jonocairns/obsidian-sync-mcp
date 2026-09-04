@@ -2,13 +2,16 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import { createHash, randomBytes } from "crypto";
+import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
 import { mountPasswordAuth } from "./auth.js";
 
-function setup(password = "test-password") {
+function setup(password = "test-password", persistPath?: string) {
     const app = new Hono();
     const baseUrl = "https://example.com";
-    const auth = mountPasswordAuth(app, baseUrl, password);
-    return { app, baseUrl, validateToken: auth.validateToken };
+    const auth = mountPasswordAuth(app, baseUrl, password, persistPath);
+    return { app, baseUrl, auth, validateToken: auth.validateToken };
 }
 
 function generatePKCE() {
@@ -17,13 +20,36 @@ function generatePKCE() {
     return { verifier, challenge };
 }
 
-async function registerClient(app: Hono, redirectUri = "https://app.example.com/callback") {
+interface TestClient {
+    client_id: string;
+    client_secret?: string;
+    token_endpoint_auth_method: "client_secret_post" | "none";
+}
+
+async function registerClient(
+    app: Hono,
+    redirectUri = "https://app.example.com/callback",
+    tokenEndpointAuthMethod: "client_secret_post" | "none" = "client_secret_post",
+): Promise<TestClient> {
     const resp = await app.request("/oauth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ client_name: "test", redirect_uris: [redirectUri] }),
+        body: JSON.stringify({
+            client_name: "test",
+            redirect_uris: [redirectUri],
+            token_endpoint_auth_method: tokenEndpointAuthMethod,
+        }),
     });
-    return (await resp.json()) as { client_id: string; client_secret: string };
+    assert.equal(resp.status, 201);
+    return (await resp.json()) as TestClient;
+}
+
+function tokenRequest(params: Record<string, string>, client: TestClient): string {
+    return new URLSearchParams({
+        ...params,
+        client_id: client.client_id,
+        ...(client.client_secret ? { client_secret: client.client_secret } : {}),
+    }).toString();
 }
 
 function extractHiddenFields(html: string): Record<string, string> {
@@ -63,9 +89,13 @@ async function submitPassword(app: Hono, code: string, csrf: string, password: s
     });
 }
 
-async function completeOAuthFlow(app: Hono, password: string) {
+async function completeOAuthFlow(
+    app: Hono,
+    password: string,
+    tokenEndpointAuthMethod: "client_secret_post" | "none" = "client_secret_post",
+) {
     const pkce = generatePKCE();
-    const client = await registerClient(app);
+    const client = await registerClient(app, "https://app.example.com/callback", tokenEndpointAuthMethod);
     const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
     const approveResp = await submitPassword(app, fields.code, fields.csrf, password);
     assert.equal(approveResp.status, 302, "approve should redirect");
@@ -75,19 +105,19 @@ async function completeOAuthFlow(app: Hono, password: string) {
     const tokenResp = await app.request("/oauth/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
+        body: tokenRequest({
             grant_type: "authorization_code",
             code: authCode,
-            client_id: client.client_id,
             code_verifier: pkce.verifier,
             redirect_uri: "https://app.example.com/callback",
-        }).toString(),
+        }, client),
     });
-    return (await tokenResp.json()) as {
+    const tokens = (await tokenResp.json()) as {
         access_token: string;
         refresh_token: string;
         expires_in: number;
     };
+    return { ...tokens, client };
 }
 
 // --- Tests ---
@@ -106,6 +136,7 @@ describe("OAuth Discovery", () => {
         const resp = await app.request("/.well-known/oauth-authorization-server");
         const body = (await resp.json()) as any;
         assert.deepEqual(body.code_challenge_methods_supported, ["S256"]);
+        assert.deepEqual(body.token_endpoint_auth_methods_supported, ["client_secret_post", "none"]);
         assert.equal(body.token_endpoint, `${baseUrl}/oauth/token`);
         assert.equal(body.registration_endpoint, `${baseUrl}/oauth/register`);
     });
@@ -125,6 +156,7 @@ describe("Dynamic Client Registration", () => {
         assert.ok(body.client_secret);
         assert.deepEqual(body.redirect_uris, ["https://x.com/cb"]);
         assert.equal(body.token_endpoint_auth_method, "client_secret_post");
+        assert.equal(body.client_secret_expires_at, 0);
     });
 
     it("honors token_endpoint_auth_method: none — no client_secret issued", async () => {
@@ -144,7 +176,7 @@ describe("Dynamic Client Registration", () => {
         assert.equal(body.client_secret, undefined);
     });
 
-    it("falls back to client_secret_post for an unrecognized auth method", async () => {
+    it("rejects an unrecognized token endpoint auth method", async () => {
         const { app } = setup();
         const resp = await app.request("/oauth/register", {
             method: "POST",
@@ -155,10 +187,9 @@ describe("Dynamic Client Registration", () => {
                 token_endpoint_auth_method: "client_secret_basic",
             }),
         });
-        assert.equal(resp.status, 201);
+        assert.equal(resp.status, 400);
         const body = (await resp.json()) as any;
-        assert.equal(body.token_endpoint_auth_method, "client_secret_post");
-        assert.ok(body.client_secret);
+        assert.equal(body.error, "invalid_client_metadata");
     });
 });
 
@@ -320,6 +351,82 @@ describe("Token Exchange", () => {
         assert.equal(tokens.expires_in, 3600);
     });
 
+    it("rejects an authorization code until password approval without consuming it", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app);
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+
+        const premature = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: fields.code,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(premature.status, 400);
+        assert.equal(((await premature.json()) as any).error, "invalid_grant");
+
+        const approved = await submitPassword(app, fields.code, fields.csrf, "test-password");
+        assert.equal(approved.status, 302);
+        const authCode = new URL(approved.headers.get("location")!).searchParams.get("code")!;
+        assert.equal(authCode, fields.code);
+
+        const exchange = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: authCode,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(exchange.status, 200);
+    });
+
+    it("keeps a public client's code unexchangeable after a wrong password", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app, "https://app.example.com/callback", "none");
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+
+        const rejectedApproval = await submitPassword(app, fields.code, fields.csrf, "wrong-password");
+        assert.equal(rejectedApproval.status, 401);
+        const rotatedFields = extractHiddenFields(await rejectedApproval.text());
+
+        const premature = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: fields.code,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(premature.status, 400);
+        assert.equal(((await premature.json()) as any).error, "invalid_grant");
+
+        const approved = await submitPassword(app, fields.code, rotatedFields.csrf, "test-password");
+        assert.equal(approved.status, 302);
+
+        const exchange = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: fields.code,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(exchange.status, 200);
+    });
+
     it("rejects incorrect PKCE verifier", async () => {
         const { app } = setup();
         const pkce = generatePKCE();
@@ -332,23 +439,89 @@ describe("Token Exchange", () => {
         const tokenResp = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
+            body: tokenRequest({
                 grant_type: "authorization_code",
                 code: authCode,
-                client_id: client.client_id,
                 code_verifier: "wrong-verifier",
                 redirect_uri: "https://app.example.com/callback",
-            }).toString(),
+            }, client),
         });
         assert.equal(tokenResp.status, 400);
         const body = (await tokenResp.json()) as any;
         assert.equal(body.error, "invalid_grant");
+
+        const validResponse = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: authCode,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(validResponse.status, 200, "failed PKCE attempt must not consume the authorization code");
     });
 
-    it("rejects wrong client_id at token exchange", async () => {
+    it("rejects a missing confidential client secret", async () => {
         const { app } = setup();
         const pkce = generatePKCE();
         const client = await registerClient(app);
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+        const approveResp = await submitPassword(app, fields.code, fields.csrf, "test-password");
+        const authCode = new URL(approveResp.headers.get("location")!).searchParams.get("code")!;
+
+        const tokenResp = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code: authCode,
+                client_id: client.client_id,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }).toString(),
+        });
+        assert.equal(tokenResp.status, 400);
+        assert.equal(((await tokenResp.json()) as any).error, "invalid_client");
+    });
+
+    it("rejects an incorrect confidential client secret", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app);
+        const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
+        const approveResp = await submitPassword(app, fields.code, fields.csrf, "test-password");
+        const authCode = new URL(approveResp.headers.get("location")!).searchParams.get("code")!;
+
+        const tokenResp = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "authorization_code",
+                code: authCode,
+                client_id: client.client_id,
+                client_secret: "0".repeat(64),
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }).toString(),
+        });
+        assert.equal(tokenResp.status, 400);
+        assert.equal(((await tokenResp.json()) as any).error, "invalid_client");
+    });
+
+    it("allows a public client to exchange a code without a secret", async () => {
+        const { app } = setup();
+        const tokens = await completeOAuthFlow(app, "test-password", "none");
+        assert.ok(tokens.access_token);
+        assert.equal(tokens.client.client_secret, undefined);
+    });
+
+    it("rejects a code issued to a different authenticated client", async () => {
+        const { app } = setup();
+        const pkce = generatePKCE();
+        const client = await registerClient(app);
+        const otherClient = await registerClient(app, "https://other.example.com/callback");
         const { fields } = await getAuthorizePage(app, client.client_id, pkce.challenge);
         const approveResp = await submitPassword(app, fields.code, fields.csrf, "test-password");
         const location = approveResp.headers.get("location")!;
@@ -357,17 +530,28 @@ describe("Token Exchange", () => {
         const tokenResp = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
+            body: tokenRequest({
                 grant_type: "authorization_code",
                 code: authCode,
-                client_id: "wrong-client-id",
                 code_verifier: pkce.verifier,
                 redirect_uri: "https://app.example.com/callback",
-            }).toString(),
+            }, otherClient),
         });
         assert.equal(tokenResp.status, 400);
         const body = (await tokenResp.json()) as any;
         assert.equal(body.error, "invalid_grant");
+
+        const validResponse = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "authorization_code",
+                code: authCode,
+                code_verifier: pkce.verifier,
+                redirect_uri: "https://app.example.com/callback",
+            }, client),
+        });
+        assert.equal(validResponse.status, 200, "cross-client attempt must not consume the authorization code");
     });
 
     it("authorization code is single-use", async () => {
@@ -383,13 +567,12 @@ describe("Token Exchange", () => {
         const resp1 = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
+            body: tokenRequest({
                 grant_type: "authorization_code",
                 code: authCode,
-                client_id: client.client_id,
                 code_verifier: pkce.verifier,
                 redirect_uri: "https://app.example.com/callback",
-            }).toString(),
+            }, client),
         });
         assert.equal(resp1.status, 200);
 
@@ -397,13 +580,12 @@ describe("Token Exchange", () => {
         const resp2 = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
+            body: tokenRequest({
                 grant_type: "authorization_code",
                 code: authCode,
-                client_id: client.client_id,
                 code_verifier: pkce.verifier,
                 redirect_uri: "https://app.example.com/callback",
-            }).toString(),
+            }, client),
         });
         assert.equal(resp2.status, 400);
     });
@@ -431,10 +613,10 @@ describe("Token Refresh", () => {
         const refreshResp = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
+            body: tokenRequest({
                 grant_type: "refresh_token",
                 refresh_token: tokens.refresh_token,
-            }).toString(),
+            }, tokens.client),
         });
         assert.equal(refreshResp.status, 200);
         const newTokens = (await refreshResp.json()) as any;
@@ -451,12 +633,175 @@ describe("Token Refresh", () => {
         const resp2 = await app.request("/oauth/token", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "refresh_token",
+                refresh_token: tokens.refresh_token,
+            }, tokens.client),
+        });
+        assert.equal(resp2.status, 400);
+    });
+
+    it("rejects missing or incorrect confidential client authentication", async () => {
+        const { app } = setup();
+        const tokens = await completeOAuthFlow(app, "test-password");
+
+        const missingSecret = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
                 grant_type: "refresh_token",
                 refresh_token: tokens.refresh_token,
+                client_id: tokens.client.client_id,
             }).toString(),
         });
-        assert.equal(resp2.status, 400);
+        assert.equal(missingSecret.status, 400);
+        assert.equal(((await missingSecret.json()) as any).error, "invalid_client");
+
+        const wrongSecret = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                grant_type: "refresh_token",
+                refresh_token: tokens.refresh_token,
+                client_id: tokens.client.client_id,
+                client_secret: "0".repeat(64),
+            }).toString(),
+        });
+        assert.equal(wrongSecret.status, 400);
+        assert.equal(((await wrongSecret.json()) as any).error, "invalid_client");
+    });
+
+    it("rejects a refresh token issued to a different authenticated client", async () => {
+        const { app } = setup();
+        const tokens = await completeOAuthFlow(app, "test-password");
+        const otherClient = await registerClient(app, "https://other.example.com/callback");
+
+        const response = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "refresh_token",
+                refresh_token: tokens.refresh_token,
+            }, otherClient),
+        });
+        assert.equal(response.status, 400);
+        assert.equal(((await response.json()) as any).error, "invalid_grant");
+
+        const validResponse = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "refresh_token",
+                refresh_token: tokens.refresh_token,
+            }, tokens.client),
+        });
+        assert.equal(validResponse.status, 200, "cross-client attempt must not consume the refresh token");
+    });
+
+    it("allows a public client to refresh without a secret", async () => {
+        const { app } = setup();
+        const tokens = await completeOAuthFlow(app, "test-password", "none");
+
+        const response = await app.request("/oauth/token", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: tokenRequest({
+                grant_type: "refresh_token",
+                refresh_token: tokens.refresh_token,
+            }, tokens.client),
+        });
+        assert.equal(response.status, 200);
+    });
+
+    it("enforces confidential client authentication after legacy state reload", async () => {
+        const directory = await mkdtemp(join(tmpdir(), "obsidian-sync-mcp-auth-"));
+        const persistPath = join(directory, "auth.json");
+
+        try {
+            const first = setup("test-password", persistPath);
+            const tokens = await completeOAuthFlow(first.app, "test-password");
+
+            // Registrations saved before tokenEndpointAuthMethod was persisted
+            // still contain the issued secret. Load them as confidential rather
+            // than weakening them to public clients.
+            const persisted = JSON.parse(await readFile(persistPath, "utf-8"));
+            delete persisted.clients[tokens.client.client_id].tokenEndpointAuthMethod;
+            await writeFile(persistPath, JSON.stringify(persisted), "utf-8");
+
+            const second = setup("test-password", persistPath);
+            assert.equal(await second.auth.loadTokens(), true);
+
+            const missingSecret = await second.app.request("/oauth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: new URLSearchParams({
+                    grant_type: "refresh_token",
+                    refresh_token: tokens.refresh_token,
+                    client_id: tokens.client.client_id,
+                }).toString(),
+            });
+            assert.equal(missingSecret.status, 400);
+
+            const valid = await second.app.request("/oauth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: tokenRequest({
+                    grant_type: "refresh_token",
+                    refresh_token: tokens.refresh_token,
+                }, tokens.client),
+            });
+            assert.equal(valid.status, 200);
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
+    });
+
+    it("invalidates pre-fix tokens while retaining their client registration", async () => {
+        const directory = await mkdtemp(join(tmpdir(), "obsidian-sync-mcp-auth-"));
+        const persistPath = join(directory, "auth.json");
+
+        try {
+            const first = setup("test-password", persistPath);
+            const tokens = await completeOAuthFlow(first.app, "test-password");
+
+            const persisted = JSON.parse(await readFile(persistPath, "utf-8"));
+            delete persisted.version;
+            await writeFile(persistPath, JSON.stringify(persisted), "utf-8");
+
+            const second = setup("test-password", persistPath);
+            assert.equal(await second.auth.loadTokens(), false);
+            assert.equal(second.validateToken(`Bearer ${tokens.access_token}`), false);
+
+            const oldRefresh = await second.app.request("/oauth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: tokenRequest({
+                    grant_type: "refresh_token",
+                    refresh_token: tokens.refresh_token,
+                }, tokens.client),
+            });
+            assert.equal(oldRefresh.status, 400);
+            assert.equal(((await oldRefresh.json()) as any).error, "invalid_grant");
+
+            const pkce = generatePKCE();
+            const { fields } = await getAuthorizePage(second.app, tokens.client.client_id, pkce.challenge);
+            const approved = await submitPassword(second.app, fields.code, fields.csrf, "test-password");
+            assert.equal(approved.status, 302, "retained client should be able to reauthorize");
+
+            const exchange = await second.app.request("/oauth/token", {
+                method: "POST",
+                headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                body: tokenRequest({
+                    grant_type: "authorization_code",
+                    code: fields.code,
+                    code_verifier: pkce.verifier,
+                    redirect_uri: "https://app.example.com/callback",
+                }, tokens.client),
+            });
+            assert.equal(exchange.status, 200);
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
     });
 });
 

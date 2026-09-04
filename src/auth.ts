@@ -25,6 +25,7 @@ interface PendingAuth {
     codeChallengeMethod: string;
     state: string;
     code: string;
+    approved: boolean;
     createdAt: number;
 }
 
@@ -53,6 +54,7 @@ const BASE_LOCKOUT_MS = 5 * 1000; // 5 seconds, doubles each lockout
 const MAX_CLIENTS = 100;
 const MAX_PENDING = 100;
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const AUTH_STATE_VERSION = 2; // v2 tokens are known to have passed password approval
 
 export interface AuthHandle {
     validateToken: (auth: string | undefined) => boolean;
@@ -68,13 +70,34 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
     const refreshTokens = new Map<string, TokenRecord>();
     const clients = new Map<string, RegisteredClient>();
 
+    function deletePendingAuth(code: string) {
+        pendingAuths.delete(code);
+        csrfTokens.delete(code);
+    }
+
+    function authenticateTokenClient(body: Record<string, string | File>): RegisteredClient | undefined {
+        const clientId = body["client_id"];
+        if (typeof clientId !== "string") return undefined;
+
+        const client = clients.get(clientId);
+        if (!client) return undefined;
+        if (client.tokenEndpointAuthMethod === "none") return client;
+
+        const clientSecret = body["client_secret"];
+        if (typeof clientSecret !== "string" || !client.clientSecret) return undefined;
+
+        const provided = Buffer.from(clientSecret);
+        const expected = Buffer.from(client.clientSecret);
+        if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) return undefined;
+        return client;
+    }
+
     // Cleanup expired pending auths and CSRF tokens
     function cleanupPending() {
         const now = Date.now();
         for (const [code, pending] of pendingAuths) {
             if (now - pending.createdAt > PENDING_TTL_MS) {
-                pendingAuths.delete(code);
-                csrfTokens.delete(code);
+                deletePendingAuth(code);
             }
         }
     }
@@ -95,6 +118,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             const activeTokens = [...tokens.entries()].filter(([, r]) => r.expiresAt > now);
             const activeRefresh = [...refreshTokens.entries()].filter(([, r]) => r.refreshExpiresAt > now);
             const data = JSON.stringify({
+                version: AUTH_STATE_VERSION,
                 tokens: Object.fromEntries(activeTokens),
                 refreshTokens: Object.fromEntries(activeRefresh),
                 clients: Object.fromEntries(clients),
@@ -171,14 +195,21 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         }
 
         const clientId = randomUUID();
-        // Honor the client's requested auth method (RFC 7591 §2). Only
-        // "client_secret_post" and "none" are advertised as supported, so
-        // anything else falls back to the confidential-client default rather
-        // than silently registering a method we don't understand.
+        // Honor the client's requested auth method (RFC 7591 §2). Preserve the
+        // existing confidential-client default when the method is omitted, but
+        // reject methods that this server does not advertise or implement.
+        const requestedAuthMethod = body.token_endpoint_auth_method;
+        if (requestedAuthMethod !== undefined && requestedAuthMethod !== "none" && requestedAuthMethod !== "client_secret_post") {
+            return c.json({
+                error: "invalid_client_metadata",
+                error_description: "token_endpoint_auth_method must be client_secret_post or none",
+            }, 400);
+        }
         const tokenEndpointAuthMethod: "client_secret_post" | "none" =
-            body.token_endpoint_auth_method === "none" ? "none" : "client_secret_post";
+            requestedAuthMethod === "none" ? "none" : "client_secret_post";
         const clientSecret = tokenEndpointAuthMethod === "none" ? undefined : randomBytes(32).toString("hex");
         const clientName = typeof body.client_name === "string" ? body.client_name.slice(0, 256) : undefined;
+        const createdAt = Date.now();
 
         const client: RegisteredClient = {
             clientId,
@@ -186,7 +217,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             tokenEndpointAuthMethod,
             redirectUris,
             clientName,
-            createdAt: Date.now(),
+            createdAt,
         };
         clients.set(clientId, client);
         await persist();
@@ -202,6 +233,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             redirect_uris: client.redirectUris,
             client_name: client.clientName,
             token_endpoint_auth_method: tokenEndpointAuthMethod,
+            ...(clientSecret ? { client_secret_expires_at: 0 } : {}),
         }, 201);
     });
 
@@ -247,6 +279,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             codeChallengeMethod,
             state,
             code,
+            approved: false,
             createdAt: Date.now(),
         });
 
@@ -312,6 +345,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         failedAttempts = 0;
         lockoutCount = 0;
         lockedUntil = 0;
+        pending.approved = true;
         csrfTokens.delete(code);
         console.log("Auth: password accepted, issuing authorization code.");
 
@@ -331,25 +365,31 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         console.log(`Auth: /oauth/token request grant_type=${JSON.stringify(grantType)}`);
 
         if (grantType === "authorization_code") {
+            const client = authenticateTokenClient(body);
+            if (!client) {
+                console.warn("Auth: /oauth/token client authentication failed for authorization_code grant");
+                return c.json({ error: "invalid_client" }, 400);
+            }
+
             const code = body["code"] as string;
-            const clientId = body["client_id"] as string;
             const codeVerifier = body["code_verifier"] as string;
             const redirectUri = body["redirect_uri"] as string;
 
             const pending = pendingAuths.get(code);
-            if (!pending || Date.now() - pending.createdAt > PENDING_TTL_MS) {
+            const expired = pending ? Date.now() - pending.createdAt > PENDING_TTL_MS : false;
+            if (!pending || !pending.approved || expired) {
                 console.warn(
                     `Auth: /oauth/token invalid_grant. code_known=${!!pending} ` +
-                    `expired=${pending ? Date.now() - pending.createdAt > PENDING_TTL_MS : "n/a"}`
+                    `approved=${pending?.approved ?? "n/a"} expired=${pending ? expired : "n/a"}`
                 );
-                if (pending) pendingAuths.delete(code);
+                if (pending && expired) deletePendingAuth(code);
                 return c.json({ error: "invalid_grant" }, 400);
             }
 
             // Verify client_id matches the original request
-            if (clientId !== pending.clientId) {
+            if (client.clientId !== pending.clientId) {
                 console.warn(
-                    `Auth: /oauth/token client_id mismatch. received=${JSON.stringify(clientId)} expected=${JSON.stringify(pending.clientId)}`
+                    `Auth: /oauth/token client_id mismatch. received=${JSON.stringify(client.clientId)} expected=${JSON.stringify(pending.clientId)}`
                 );
                 return c.json({ error: "invalid_grant", error_description: "client_id mismatch" }, 400);
             }
@@ -373,7 +413,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 }
             }
 
-            pendingAuths.delete(code);
+            deletePendingAuth(code);
             console.log(`Auth: /oauth/token issuing access token client_id=${pending.clientId}`);
 
             const accessToken = randomBytes(32).toString("hex");
@@ -398,11 +438,22 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         }
 
         if (grantType === "refresh_token") {
+            const client = authenticateTokenClient(body);
+            if (!client) {
+                console.warn("Auth: /oauth/token client authentication failed for refresh_token grant");
+                return c.json({ error: "invalid_client" }, 400);
+            }
+
             const refreshToken = body["refresh_token"] as string;
             const old = refreshTokens.get(refreshToken);
             if (!old) {
                 console.warn("Auth: /oauth/token refresh_token unknown");
                 return c.json({ error: "invalid_grant" }, 400);
+            }
+
+            if (old.clientId !== client.clientId) {
+                console.warn("Auth: /oauth/token refresh_token client_id mismatch");
+                return c.json({ error: "invalid_grant", error_description: "refresh_token client mismatch" }, 400);
             }
 
             // Check refresh token expiry
@@ -475,17 +526,36 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 const raw = await readFile(persistPath, "utf-8");
                 const data = JSON.parse(raw);
                 const now = Date.now();
-                for (const [k, v] of Object.entries(data.tokens ?? {})) {
-                    const record = v as TokenRecord;
-                    if (record.accessToken && record.refreshToken && record.expiresAt > now) tokens.set(k, record);
-                }
-                for (const [k, v] of Object.entries(data.refreshTokens ?? {})) {
-                    const record = v as TokenRecord;
-                    if (record.accessToken && record.refreshToken && record.refreshExpiresAt > now) refreshTokens.set(k, record);
+                const tokensHaveApprovalProvenance = data.version === AUTH_STATE_VERSION;
+                if (tokensHaveApprovalProvenance) {
+                    for (const [k, v] of Object.entries(data.tokens ?? {})) {
+                        const record = v as TokenRecord;
+                        if (record.accessToken && record.refreshToken && record.expiresAt > now) tokens.set(k, record);
+                    }
+                    for (const [k, v] of Object.entries(data.refreshTokens ?? {})) {
+                        const record = v as TokenRecord;
+                        if (record.accessToken && record.refreshToken && record.refreshExpiresAt > now) refreshTokens.set(k, record);
+                    }
                 }
                 for (const [k, v] of Object.entries(data.clients ?? {})) {
                     const client = v as RegisteredClient;
-                    if (client.clientId && client.redirectUris) clients.set(k, client);
+                    if (!client.clientId || !Array.isArray(client.redirectUris)) continue;
+
+                    // Older persisted registrations may predate the explicit
+                    // method field. Infer it only when the stored shape makes
+                    // the original contract unambiguous; reject unsafe or
+                    // unsupported combinations and require re-registration.
+                    if (!client.tokenEndpointAuthMethod) {
+                        if (!client.clientSecret) continue;
+                        client.tokenEndpointAuthMethod = "client_secret_post";
+                    }
+                    if (client.tokenEndpointAuthMethod === "client_secret_post" && !client.clientSecret) continue;
+                    if (client.tokenEndpointAuthMethod !== "client_secret_post" && client.tokenEndpointAuthMethod !== "none") continue;
+                    clients.set(k, client);
+                }
+                if (!tokensHaveApprovalProvenance) {
+                    console.warn("Auth: invalidated pre-approval-gating OAuth sessions; registered clients were retained.");
+                    await persist();
                 }
                 console.log(`Auth tokens loaded from disk (${tokens.size} sessions).`);
                 return tokens.size > 0;

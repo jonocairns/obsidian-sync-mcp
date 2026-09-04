@@ -12,6 +12,7 @@ The server implements a self-contained OAuth 2.1 authorization server with PKCE.
 
 - **OAuth 2.1 with PKCE (S256)** — authorization code flow with Proof Key for Code Exchange. Only S256 is accepted; plain PKCE and missing challenges are rejected.
 - **Dynamic Client Registration (RFC 7591)** — agents register themselves automatically. No manual client setup.
+- **Client authentication** — public clients register with `token_endpoint_auth_method: none`; confidential clients register with `client_secret_post` and must present their issued secret for both authorization-code exchange and refresh. Codes and refresh tokens remain bound to the client that received them.
 - **Access tokens** expire after 1 hour. Agents refresh transparently — users don't re-enter the password.
 - **Refresh tokens** expire after 14 days of inactivity (configurable via `MCP_REFRESH_DAYS`). After expiry, the user must re-authenticate.
 - **Refresh token rotation** — each refresh issues a new refresh token and invalidates the old one. If a token is leaked and both parties try to refresh, the first one wins and the leaked token becomes invalid.
@@ -26,8 +27,9 @@ The server implements a self-contained OAuth 2.1 authorization server with PKCE.
 
 ### Token security
 
-- **Timing-safe comparison** — both password and CSRF token comparisons use `crypto.timingSafeEqual` to prevent timing side-channel attacks.
+- **Timing-safe comparison** — password, CSRF token, and confidential-client-secret comparisons use `crypto.timingSafeEqual` to prevent timing side-channel attacks.
 - **CSRF protection** — the OAuth approval form includes a per-request CSRF token. Submissions without a valid token are rejected.
+- **Approval-gated authorization codes** — codes shown in the password form cannot be exchanged until that exact request passes password approval.
 - **Redirect URI validation** — the `/oauth/authorize` endpoint validates that the `redirect_uri` matches what the client registered, preventing authorization code theft via open redirect.
 - **Token persistence** — OAuth tokens are persisted to disk on clean shutdown (and every 5 minutes) and loaded on restart, so sessions survive server restarts and deploys. Files are stored in `DATA_DIR/<vault-hash>/` with `0600` permissions (owner-only). Defaults to `~/.obsidian-mcp/` locally, or the persistent volume on Fly.io. Each vault gets an isolated subdirectory.
 

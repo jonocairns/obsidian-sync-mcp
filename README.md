@@ -248,6 +248,11 @@ The server includes a self-contained OAuth 2.1 provider. When an agent connects:
 2. Enter the `MCP_AUTH_TOKEN` password
 3. The agent gets an access token and refreshes it transparently
 
+Dynamic client registration supports public clients (`none`) and confidential
+clients (`client_secret_post`). Confidential clients must authenticate with
+their issued client secret whenever they exchange an authorization code or
+refresh a token; public clients use S256 PKCE and rotating refresh tokens.
+
 The session is shared across all your Claude interfaces (Desktop, Web, Mobile) and persists across server restarts. You'll need to re-enter the password after 14 days of inactivity (configurable via `MCP_REFRESH_DAYS`).
 
 For non-OAuth clients (curl, MCP Inspector, custom agents), you can also pass the token directly as `Authorization: Bearer <MCP_AUTH_TOKEN>`.
