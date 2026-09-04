@@ -19,7 +19,7 @@
         "ai"
     ],
     "engines": {
-        "node": "^22.14.0 || ^24.0.0"
+        "node": "^24.0.0"
     },
     "bin": {
         "obsidian-sync-mcp": "dist/main.js"
@@ -62,7 +62,7 @@
         "zod": "^3"
     },
     "devDependencies": {
-        "@types/node": "^22",
+        "@types/node": "^24.13.3",
         "oxlint": "1.79.0",
         "tsup": "^8",
         "tsx": "^4",

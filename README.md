@@ -7,7 +7,7 @@
 
 ![MCP](https://img.shields.io/badge/MCP-compatible-blue)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Node](https://img.shields.io/badge/node-22.14%2B%20%7C%2024-green.svg)
+![Node](https://img.shields.io/badge/node-24_LTS-green.svg)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg)
 
 Give any AI agent access to your Obsidian vault over MCP. Run it locally against your vault files, or pair it with [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) and deploy to the cloud so it works even when your machine is off.
@@ -392,9 +392,7 @@ account.
 - **No conflict resolution.** If an agent and Obsidian edit the same note simultaneously, last write wins.
 - **Text only.** Binary attachments are not exposed through MCP tools.
 - **Deep links depend on the client.** Obsidian `obsidian://` deep links are included in every tool response. They work on Claude Mobile and in browsers, but some clients (Claude Desktop) may not render them as clickable links.
-- **Node 22.14+ or Node 24 required.** Node 22.13 crashes inside the native
-  SQLite dependency. The dependency must also match the runtime platform and
-  architecture.
+- **Node 24 LTS required.** Native dependencies must match the runtime platform and architecture.
 - **Source checkouts use pnpm with a seven-day dependency cooldown.** Dependency
   lifecycle scripts are denied unless their exact package version is reviewed in
   `pnpm-workspace.yaml`; unreviewed scripts fail the install.
@@ -418,7 +416,7 @@ This software is provided as-is under the [MIT license](https://github.com/jonoc
 
 ## Development
 
-With Node 22.14+ or Node 24 installed:
+With Node 24 LTS installed:
 
 ```bash
 git clone --recursive https://github.com/jonocairns/obsidian-sync-mcp.git
@@ -432,7 +430,7 @@ pnpm test:e2e  # integration tests
 
 ### Nix and direnv
 
-The repository includes a Nix flake that provides Node 22. If you use
+The repository includes a Nix flake that provides Node 24 LTS. If you use
 [direnv](https://direnv.net/) with [nix-direnv](https://github.com/nix-community/nix-direnv)
 and its shell hook installed, allow the checked-in environment once and it will
 load whenever you enter the repository:
