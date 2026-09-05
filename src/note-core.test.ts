@@ -14,6 +14,10 @@ async function vault() {
     directories.push(root);
     return { root, backend: new LocalVault(root) };
 }
+class HookedLocalVault extends LocalVault {
+    constructor(root: string, private hook: (step: "opened" | "before_post_read") => Promise<void>) { super(root); }
+    protected override async onCreateStep(step: "opened" | "before_post_read"): Promise<void> { await this.hook(step); }
+}
 afterEach(async () => {
     await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -36,6 +40,30 @@ describe("exact edit transformations", () => {
 });
 
 describe("local versioned backend", () => {
+    it("reports failures after exclusive create-open as indeterminate", async () => {
+        const root = await mkdtemp(join(tmpdir(), "note-core-"));
+        directories.push(root);
+        const backend = new HookedLocalVault(root, async (step) => {
+            if (step === "opened") throw Object.assign(new Error("injected post-open failure"), { code: "EEXIST" });
+        });
+        const result = await backend.createVersioned("note.md", new TextEncoder().encode("requested"));
+        assert.equal(result.status, "indeterminate");
+        assert.deepEqual(result.effects, [{ kind: "note_created", path: "note.md", completed: false }]);
+        assert.equal(await readFile(join(root, "note.md"), "utf8"), "");
+    });
+
+    it("reports post-create verification failures with the completed effect", async () => {
+        const root = await mkdtemp(join(tmpdir(), "note-core-"));
+        directories.push(root);
+        const backend = new HookedLocalVault(root, async (step) => {
+            if (step === "before_post_read") throw new Error("injected verification failure");
+        });
+        const result = await backend.createVersioned("note.md", new TextEncoder().encode("requested"));
+        assert.equal(result.status, "indeterminate");
+        assert.deepEqual(result.effects, [{ kind: "note_created", path: "note.md", completed: true }]);
+        assert.equal(await readFile(join(root, "note.md"), "utf8"), "requested");
+    });
+
     it("creates only when absent and returns opaque versions", async () => {
         const { backend } = await vault();
         const first = await backend.createVersioned("note.md", new TextEncoder().encode(""));

@@ -19,7 +19,8 @@
 - Preserve existing local file permissions across atomic edits and moves; use filesystem birth time for created timestamps when available.
 - Refuse MCP mutations on CouchDB notes with unresolved conflict branches until they are reconciled externally.
 - Count overlapping `replace_once` literals so exactly-once ambiguity is reported honestly.
-- Index committed moves from the backend result and report stale index state when committed destination content is unavailable.
+- Index committed creates, edits, and moves only from authoritative backend snapshots; report stale index state when committed content is missing or invalid.
+- Report local-create failures after exclusive publication and CouchDB delete post-verification failures as `indeterminate`, preserving known completed effects.
 
 ### Tests
 - Add focused exact-edit, local atomicity/concurrency/symlink, structured status, raw MCP, HTTP, privacy-log, and real CouchDB winner-CAS coverage.

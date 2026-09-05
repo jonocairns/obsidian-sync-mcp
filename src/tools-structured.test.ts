@@ -65,6 +65,89 @@ async function call(tools: Map<string, any>, name: string, args: Record<string, 
 }
 
 describe("structured mutation outcomes", () => {
+    for (const operation of ["create_note", "edit_note"] as const) {
+        it(`indexes ${operation} from authoritative backend bytes and timestamp`, async () => {
+            const index = new SearchIndex();
+            let indexed: { path: string; content: string; mtime?: number } | undefined;
+            index.update = (path, content, mtime) => { indexed = { path, content, mtime }; };
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note: { ...note, bytes: encoder.encode("authoritative"), mtime: 123 },
+                    effects: [{
+                        kind: operation === "create_note" ? "note_created" : "note_updated",
+                        path: "note.md",
+                        completed: true,
+                    }],
+                }), index),
+                operation,
+                operation === "create_note"
+                    ? { path: "note.md", content: "requested" }
+                    : { path: "note.md", version: note.version, content: "requested", operation: "replace_all" },
+            );
+            assert.equal(result.structuredContent.status, "ok");
+            assert.deepEqual(indexed, { path: "note.md", content: "authoritative", mtime: 123 });
+        });
+    }
+
+    for (const backendNote of [undefined, { ...note, bytes: Uint8Array.from([0xff]) }]) {
+        it(`marks committed content stale when the authoritative snapshot is ${backendNote ? "invalid Markdown" : "missing"}`, async () => {
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note: backendNote,
+                    effects: [{ kind: "note_created", path: "note.md", completed: true }],
+                })),
+                "create_note",
+                { path: "note.md", content: "requested" },
+            );
+            assert.equal(result.structuredContent.status, "ok");
+            assert.equal(result.structuredContent.result.indexFreshness, "stale");
+            assert.deepEqual(result.structuredContent.effects.at(-1), {
+                kind: "index_updated",
+                path: "note.md",
+                completed: false,
+            });
+        });
+    }
+
+    for (const state of ["ready", "building", "catching_up", "error"] as const) {
+        it(`keeps mutation freshness monotonic from ${state}`, async () => {
+            const index = new SearchIndex();
+            index.setBuildStatus(state);
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note,
+                    effects: [{ kind: "note_created", path: "note.md", completed: true }],
+                }), index),
+                "create_note",
+                { path: "note.md", content: "requested" },
+            );
+            assert.equal(result.structuredContent.result.indexFreshness, state === "ready" ? "current" : "stale");
+            assert.equal(result.structuredContent.effects.at(-1).completed, true);
+        });
+    }
+
+    it("marks freshness stale if the index stops being ready during maintenance", async () => {
+        const index = new SearchIndex();
+        const update = index.update.bind(index);
+        index.update = (path, content, mtime) => {
+            update(path, content, mtime);
+            index.setBuildStatus("catching_up");
+        };
+        const result = await call(
+            toolsFor(backend({
+                status: "ok",
+                note,
+                effects: [{ kind: "note_created", path: "note.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "note.md", content: "requested" },
+        );
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+    });
+
     it("keeps a committed vault mutation successful when index maintenance fails", async () => {
         const index = new SearchIndex();
         index.update = () => { throw new Error("index unavailable"); };
@@ -84,7 +167,7 @@ describe("structured mutation outcomes", () => {
             path: "note.md",
             completed: false,
         });
-        assert.match(result.content[0].text, /index maintenance failed/i);
+        assert.match(result.content[0].text, /index is not proven current/i);
     });
 
     it("maps a post-commit CouchDB branch to committed_with_conflict", async () => {

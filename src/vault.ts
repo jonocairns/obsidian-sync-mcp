@@ -348,7 +348,9 @@ export class Vault implements VaultBackend {
                 const post = await this.manipulator.liveSyncLocalDB.getRaw(id, { conflicts: true, deleted_conflicts: true } as any) as any;
                 const branches = [...(post._conflicts ?? []), ...(post._deleted_conflicts ?? [])];
                 if (branches.length > 0) return { status: "committed_with_conflict", effects: [effect] };
-            } catch {}
+            } catch {
+                return { status: "indeterminate", effects: [effect] };
+            }
             return { status: "ok", effects: [effect] };
         } catch (error: any) {
             if (this.isConflictError(error)) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };

@@ -102,12 +102,12 @@ export function registerTools(
         path: string,
         destinationPath: string | undefined,
         oldVersion: string | undefined,
-        content: string | undefined,
         replacements: number | undefined,
         backend: BackendMutationResult,
     ) {
         const effects = effectsOf(backend.effects);
-        let indexState: "current" | "stale" = "current";
+        const indexWasReady = searchIndex.status.state === "ready";
+        let maintenanceSucceeded = true;
         if (backend.effects.some((effect) => effect.completed)) {
             try {
                 if (operation === "delete" && backend.effects.some((effect) => effect.kind === "note_deleted" && effect.completed)) {
@@ -116,18 +116,22 @@ export function registerTools(
                     if (backend.effects.some((effect) => effect.kind === "source_deleted" && effect.completed)) searchIndex.remove(path);
                     const destinationCommitted = backend.effects.some((effect) => effect.kind === "destination_created" && effect.completed);
                     if (destinationCommitted) {
-                        if (content === undefined || !destinationPath) throw new Error("Committed destination content unavailable for indexing");
-                        searchIndex.update(destinationPath, content, ("note" in backend ? backend.note?.mtime : undefined) ?? Date.now());
+                        if (!("note" in backend) || !backend.note || !destinationPath) throw new Error("Committed destination snapshot unavailable for indexing");
+                        searchIndex.update(destinationPath, markdownDecoder.decode(backend.note.bytes), backend.note.mtime);
                     }
-                } else if (content !== undefined) {
-                    searchIndex.update(path, content, ("note" in backend ? backend.note?.mtime : undefined) ?? Date.now());
+                } else if (operation === "create" || operation === "edit") {
+                    if (!("note" in backend) || !backend.note) throw new Error("Committed note snapshot unavailable for indexing");
+                    searchIndex.update(path, markdownDecoder.decode(backend.note.bytes), backend.note.mtime);
                 }
                 effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: true });
             } catch {
-                indexState = "stale";
+                maintenanceSucceeded = false;
                 effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: false });
             }
         }
+        const indexState: "current" | "stale" = indexWasReady && maintenanceSucceeded && searchIndex.status.state === "ready"
+            ? "current"
+            : "stale";
         if (backend.status === "error") return toToolResult(publicError(backend.code));
         if (backend.status === "conflict") {
             const next = recoveryFor(backend.code);
@@ -150,8 +154,8 @@ export function registerTools(
         if (backend.status === "indeterminate") {
             const value: StructuredNoteResult = {
                 schemaVersion, status: "indeterminate", effects,
-                error: { code: "BACKEND_UNAVAILABLE", message: "The backend response was lost before commit state could be proven." },
-                warning: "Do not repeat the mutation blindly because it may already have committed.",
+                error: { code: "BACKEND_UNAVAILABLE", message: "The backend could not prove the mutation's final state or all required postconditions." },
+                warning: "Do not repeat the mutation blindly; inspect the completed effects because it may already have committed in whole or in part.",
                 recovery: recovery("read_then_retry", "Read every affected path authoritatively before deciding whether another mutation is safe."),
             };
             return toToolResult(value);
@@ -172,7 +176,7 @@ export function registerTools(
             };
             return toToolResult(value);
         }
-        const warnings = indexState === "stale" ? ["The vault mutation committed, but index maintenance failed; index-backed results may be stale."] : [];
+        const warnings = indexState === "stale" ? ["The vault mutation committed, but the index is not proven current; index-backed results may be stale."] : [];
         const value: StructuredNoteResult = {
             schemaVersion, status: "ok", result, effects, warnings,
             recovery: recovery("none", "No recovery action is required."),
@@ -234,7 +238,7 @@ export function registerTools(
         execute: async ({ path, content }) => {
             if (!isPathWritable(path, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
             const backend = await vault.createVersioned(path, new TextEncoder().encode(content));
-            return finishMutation("create", path, undefined, undefined, content, 0, backend);
+            return finishMutation("create", path, undefined, undefined, 0, backend);
         },
     });
 
@@ -465,7 +469,7 @@ export function registerTools(
             if (read.status !== "ok") return toToolResult(publicError(read.code));
             if (read.note.version !== version) {
                 const backend: BackendMutationResult = { status: "conflict", code: "STALE_VERSION", effects: [{ kind: "note_updated", path, completed: false }] };
-                return finishMutation("edit", path, undefined, version, undefined, undefined, backend);
+                return finishMutation("edit", path, undefined, version, undefined, backend);
             }
             let existing: string;
             try { existing = markdownDecoder.decode(read.note.bytes); }
@@ -473,7 +477,7 @@ export function registerTools(
             const edit = applyNoteEdit(existing, operation, content, old_text);
             if (!edit.ok) return toToolResult(publicError(edit.code));
             const backend = await vault.replaceVersioned(path, version, new TextEncoder().encode(edit.content));
-            return finishMutation("edit", path, undefined, version, edit.content, edit.replacements, backend);
+            return finishMutation("edit", path, undefined, version, edit.replacements, backend);
         },
     });
 
@@ -488,7 +492,7 @@ export function registerTools(
         outputSchema: structuredNoteOutputSchema,
         execute: async ({ path, version }) => {
             if (!isPathWritable(path, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
-            return finishMutation("delete", path, undefined, version, undefined, undefined, await vault.deleteVersioned(path, version));
+            return finishMutation("delete", path, undefined, version, undefined, await vault.deleteVersioned(path, version));
         },
     });
 
@@ -505,11 +509,7 @@ export function registerTools(
         execute: async ({ from, to, version }) => {
             if (!isPathWritable(from, writeFolders) || !isPathWritable(to, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
             const backend = await vault.moveVersioned(from, to, version);
-            let content: string | undefined;
-            if ("note" in backend && backend.note) {
-                try { content = markdownDecoder.decode(backend.note.bytes); } catch {}
-            }
-            return finishMutation("move", from, to, version, content, undefined, backend);
+            return finishMutation("move", from, to, version, undefined, backend);
         },
     });
 

@@ -16,6 +16,9 @@ export class LocalVault implements VaultBackend {
         this.root = realpathSync(resolve(vaultPath));
     }
 
+    /** Fault-injection checkpoint for commit-boundary tests. */
+    protected async onCreateStep(_step: "opened" | "before_post_read"): Promise<void> {}
+
     private normalizePath(path: string): string {
         const canonical = path;
         const segments = canonical.split("/");
@@ -165,19 +168,27 @@ export class LocalVault implements VaultBackend {
 
     private async createVersionedUnlocked(path: string, bytes: Uint8Array, mode = 0o600): Promise<BackendMutationResult> {
         const effect = { kind: "note_created" as const, path, completed: false };
+        let destinationOpened = false;
         try {
             const full = await this.safePath(path);
             await mkdir(dirname(full), { recursive: true });
             await this.safePath(path);
             const handle = await open(full, "wx", mode);
-            try { await handle.writeFile(bytes); await handle.chmod(mode); await handle.sync(); } finally { await handle.close(); }
-            effect.completed = true;
+            destinationOpened = true;
+            try {
+                await this.onCreateStep("opened");
+                await handle.writeFile(bytes); await handle.chmod(mode); await handle.sync();
+            } finally {
+                await handle.close();
+            }
             await this.syncDirectory(full);
+            effect.completed = true;
+            await this.onCreateStep("before_post_read");
             const read = await this.readVersioned(path);
             return read.status === "ok" ? { status: "ok", note: read.note, effects: [effect] } : { status: "indeterminate", effects: [effect] };
         } catch (error: any) {
+            if (destinationOpened) return { status: "indeterminate", effects: [effect] };
             if (error.code === "EEXIST") return { status: "conflict", code: "DESTINATION_EXISTS", effects: [effect] };
-            if (effect.completed) return { status: "indeterminate", effects: [effect] };
             return { status: "error", code: error.code === "INVALID_PATH" ? "INVALID_PATH" : "BACKEND_UNAVAILABLE", effects: [effect] };
         }
     }
