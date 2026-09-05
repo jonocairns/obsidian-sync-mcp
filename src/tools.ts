@@ -1,13 +1,66 @@
 import type { FastMCP } from "fastmcp";
 import { z } from "zod";
 import { makeDeepLink } from "./deeplink.js";
-import type { VaultBackend } from "./vault-backend.js";
+import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
 import type { SearchBuildStatus, SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
+import { applyNoteEdit } from "./note-edit.js";
+import { domainError, recovery, schemaVersion, structuredNoteOutputSchema, toToolResult, type ErrorCode, type StructuredNoteResult } from "./note-contract.js";
+import { parseFrontmatterAndLinks } from "./parse.js";
 
 const debugLogging = process.env.LOG_LEVEL === "debug";
+const markdownDecoder = new TextDecoder("utf-8", { fatal: true });
 
-const WRITE_TOOLS = ["write_note", "edit_note", "delete_note", "move_note"] as const;
+const WRITE_TOOLS = ["create_note", "edit_note", "delete_note", "move_note"] as const;
+
+function recoveryFor(code: BackendFailureCode | ErrorCode) {
+    if (code === "STALE_VERSION") return recovery("read_then_retry", "Read the note again and decide whether to retry with the fresh version.");
+    if (code === "PRE_EXISTING_CONFLICT") return recovery("manual_reconcile", "Reconcile the note's existing CouchDB conflict branches before another mutation.");
+    if (code === "DESTINATION_EXISTS") return recovery("change_request", "Choose a different destination or explicitly reconcile the existing note.");
+    if (code === "RESTORE_REQUIRED") return recovery("change_request", "This path is logically deleted or tombstoned and requires a future explicit restore workflow.");
+    if (code === "NOTE_NOT_FOUND") return recovery("change_request", "Check the path or create the note.");
+    if (code === "INVALID_PATH" || code === "WRITE_DENIED") return recovery("change_request", "Use a valid writable vault-relative Markdown path.");
+    if (code === "LITERAL_NOT_FOUND" || code === "LITERAL_AMBIGUOUS") return recovery("change_request", "Change old_text or choose another explicit edit operation.");
+    if (code === "BACKEND_UNAVAILABLE") return recovery("retry_same", "Retry after the vault backend is available.");
+    return recovery("none", "Inspect the server failure before retrying.");
+}
+
+function messageFor(code: BackendFailureCode | ErrorCode): string {
+    return ({
+        INVALID_PATH: "The note path is invalid.",
+        NOTE_NOT_FOUND: "The note does not exist.",
+        WRITE_DENIED: "The note path is outside the configured writable folders.",
+        STALE_VERSION: "The note changed after the supplied version was read.",
+        PRE_EXISTING_CONFLICT: "The note already has unresolved CouchDB conflict branches.",
+        DESTINATION_EXISTS: "The destination already exists.",
+        RESTORE_REQUIRED: "The note is logically deleted or tombstoned.",
+        LITERAL_NOT_FOUND: "The literal old_text was not found.",
+        LITERAL_AMBIGUOUS: "The literal old_text matched more than once.",
+        BACKEND_UNAVAILABLE: "The vault backend could not complete the operation.",
+        INTERNAL_ERROR: "The operation failed internally.",
+    })[code];
+}
+
+function publicError(code: BackendFailureCode | ErrorCode): StructuredNoteResult {
+    const next = recoveryFor(code);
+    return domainError(code, messageFor(code), next.strategy, next.guidance);
+}
+
+type PublicEffect = {
+    kind: BackendEffect["kind"] | "index_updated";
+    path: string;
+    completed: boolean;
+};
+function effectsOf(effects: BackendEffect[]): PublicEffect[] {
+    return effects.map((effect) => ({ ...effect }));
+}
+
+function indexFreshness(searchIndex: SearchIndex): "current" | "building" | "catching_up" | "stale" {
+    const state = searchIndex.status.state;
+    if (state === "ready") return "current";
+    if (state === "error") return "stale";
+    return state;
+}
 
 export function formatIndexStatusNotice(status: SearchBuildStatus): string {
     if (status.state === "ready") return "";
@@ -38,18 +91,99 @@ export function registerTools(
     if (readOnly) {
         console.log(`READ_ONLY mode: write tools disabled (${WRITE_TOOLS.join(", ")}).`);
     } else if (writeFolders) {
-        console.log(`WRITE_FOLDERS: writes restricted to ${writeFolders.map((f) => f + "/").join(", ")}.`);
+        console.log(`WRITE_FOLDERS: writes restricted to ${writeFolders.length} configured folder(s) (paths redacted).`);
     }
     const writeScopeNote = writeFolders
         ? ` Writes are only allowed inside: ${writeFolders.map((f) => f + "/").join(", ")}.`
         : "";
-    const denyWrite = (path: string) =>
-        `Write access denied: '${path}' is outside the writable folders (${writeFolders!.map((f) => f + "/").join(", ")}).`;
     const _addTool = server.addTool.bind(server);
+    async function finishMutation(
+        operation: "create" | "edit" | "delete" | "move",
+        path: string,
+        destinationPath: string | undefined,
+        oldVersion: string | undefined,
+        content: string | undefined,
+        replacements: number | undefined,
+        backend: BackendMutationResult,
+    ) {
+        const effects = effectsOf(backend.effects);
+        let indexState: "current" | "stale" = "current";
+        if (backend.effects.some((effect) => effect.completed)) {
+            try {
+                if (operation === "delete" && backend.effects.some((effect) => effect.kind === "note_deleted" && effect.completed)) {
+                    searchIndex.remove(path);
+                } else if (operation === "move") {
+                    if (backend.effects.some((effect) => effect.kind === "source_deleted" && effect.completed)) searchIndex.remove(path);
+                    const destinationCommitted = backend.effects.some((effect) => effect.kind === "destination_created" && effect.completed);
+                    if (destinationCommitted) {
+                        if (content === undefined || !destinationPath) throw new Error("Committed destination content unavailable for indexing");
+                        searchIndex.update(destinationPath, content, ("note" in backend ? backend.note?.mtime : undefined) ?? Date.now());
+                    }
+                } else if (content !== undefined) {
+                    searchIndex.update(path, content, ("note" in backend ? backend.note?.mtime : undefined) ?? Date.now());
+                }
+                effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: true });
+            } catch {
+                indexState = "stale";
+                effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: false });
+            }
+        }
+        if (backend.status === "error") return toToolResult(publicError(backend.code));
+        if (backend.status === "conflict") {
+            const next = recoveryFor(backend.code);
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "conflict", error: { code: backend.code, message: messageFor(backend.code) },
+                effects, recovery: next,
+            };
+            return toToolResult(value);
+        }
+        if (backend.status === "partial") {
+            const next = recoveryFor(backend.code);
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "partial", effects,
+                error: { code: backend.code, message: messageFor(backend.code) },
+                warning: "The move was not atomic; only the completed effects listed here are known to have committed.",
+                recovery: next,
+            };
+            return toToolResult(value);
+        }
+        if (backend.status === "indeterminate") {
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "indeterminate", effects,
+                error: { code: "BACKEND_UNAVAILABLE", message: "The backend response was lost before commit state could be proven." },
+                warning: "Do not repeat the mutation blindly because it may already have committed.",
+                recovery: recovery("read_then_retry", "Read every affected path authoritatively before deciding whether another mutation is safe."),
+            };
+            return toToolResult(value);
+        }
+        const result = {
+            kind: "mutation" as const,
+            operation, path, destinationPath, oldVersion,
+            newVersion: backend.note?.version, replacements,
+            concurrency: vault.concurrency,
+            indexFreshness: indexState,
+            deepLink: operation === "delete" ? undefined : makeDeepLink(vaultName, destinationPath ?? path),
+        };
+        if (backend.status === "committed_with_conflict") {
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "committed_with_conflict", result, effects,
+                warning: "The requested mutation committed, but a concurrent CouchDB branch is now present.",
+                recovery: recovery("manual_reconcile", "Read the note and reconcile all conflict branches before another mutation."),
+            };
+            return toToolResult(value);
+        }
+        const warnings = indexState === "stale" ? ["The vault mutation committed, but index maintenance failed; index-backed results may be stale."] : [];
+        const value: StructuredNoteResult = {
+            schemaVersion, status: "ok", result, effects, warnings,
+            recovery: recovery("none", "No recovery action is required."),
+        };
+        return toToolResult(value);
+    }
+
     server.addTool = (tool: any) => {
         const original = tool.execute;
         tool.execute = async (args: any, ctx: any) => {
-            if (debugLogging) console.log(`[tool] ${tool.name}(${JSON.stringify(args)})`);
+            if (debugLogging) console.log(`[tool] ${tool.name} invoked`);
             const start = performance.now();
             const result = await original(args, ctx);
             if (debugLogging) console.log(`[tool] ${tool.name} → ${((performance.now() - start)).toFixed(0)}ms`);
@@ -59,43 +193,54 @@ export function registerTools(
     };
     server.addTool({
         name: "read_note",
-        description:
-            "Read the content of a note from the Obsidian vault. Returns the markdown content and a deep link to open it in Obsidian.",
+        description: "Read canonical Markdown and an authoritative opaque version. Use that version for edit, delete, or move.",
+        annotations: { title: "Read note", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note, e.g. 'daily/2026-03-23.md'"),
         }),
+        outputSchema: structuredNoteOutputSchema,
         execute: async ({ path }) => {
-            const content = await vault.readNote(path);
-            if (content === null) {
-                return `Note not found: ${path}`;
-            }
-            const deepLink = makeDeepLink(vaultName, path);
-            return `[Open in Obsidian](${deepLink})\n\n---\n\n${content}`;
+            const read = await vault.readVersioned(path);
+            if (read.status !== "ok") return toToolResult(publicError(read.code));
+            let markdown: string;
+            try { markdown = markdownDecoder.decode(read.note.bytes); }
+            catch { return toToolResult(publicError("INTERNAL_ERROR")); }
+            const metadata = parseFrontmatterAndLinks(markdown);
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "ok",
+                result: {
+                    kind: "note", path: read.note.path, markdown, version: read.note.version,
+                    size: read.note.size,
+                    timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
+                    frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
+                    conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
+                    concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),
+                },
+                effects: [], warnings: [], recovery: recovery("none", "No recovery action is required."),
+            };
+            return toToolResult(value);
         },
     });
 
     if (!readOnly) server.addTool({
-        name: "write_note",
-        description:
-            "Write or update a note in the Obsidian vault. Creates the note if it doesn't exist. Replaces the entire content if it does — read first if you need to preserve existing content." + writeScopeNote,
+        name: "create_note",
+        description: "Create a new Markdown note only if the path is absent. It never overwrites or resurrects a deleted note." + writeScopeNote,
+        annotations: { title: "Create note", readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
         parameters: z.object({
-            path: z.string().describe("Vault-relative path to the note, e.g. 'daily/2026-03-23.md'"),
-            content: z.string().describe("Full markdown content for the note"),
+            path: z.string().describe("New vault-relative .md path"),
+            content: z.string().describe("Exact Markdown content; no newline is added or changed"),
         }),
+        outputSchema: structuredNoteOutputSchema,
         execute: async ({ path, content }) => {
-            if (!isPathWritable(path, writeFolders)) return denyWrite(path);
-            const ok = await vault.writeNote(path, content);
-            if (!ok) {
-                return `Failed to write note: ${path}`;
-            }
-            searchIndex.update(path, content, Date.now());
-            const deepLink = makeDeepLink(vaultName, path);
-            return `Note saved: ${path}\n[Open in Obsidian](${deepLink})`;
+            if (!isPathWritable(path, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
+            const backend = await vault.createVersioned(path, new TextEncoder().encode(content));
+            return finishMutation("create", path, undefined, undefined, content, 0, backend);
         },
     });
 
     server.addTool({
         name: "list_notes",
+        annotations: { title: "List notes", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description: "List markdown notes in the vault with modification timestamps. Examples: list_notes(sort_by='modified', limit=10) for 10 most recent notes. list_notes(name='meeting') to find notes by name. list_notes(folder='daily') for a specific folder. list_notes(tag='project') for notes with a specific tag. Returns up to 100 notes by default.",
         parameters: z.object({
             folder: z
@@ -167,6 +312,7 @@ export function registerTools(
 
     if (searchIndex.fullTextEnabled) server.addTool({
         name: "search_notes",
+        annotations: { title: "Search notes", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description:
             "Search note titles, aliases, headings, tags, and body text using the disk-backed full-text index. Returns ranked paths with matching snippets. Exact title, alias, filename, and path matches rank first, so a known note name is a good query. Use list_notes only to browse a folder or tag without a text query.",
         parameters: z.object({
@@ -239,6 +385,7 @@ export function registerTools(
 
     server.addTool({
         name: "list_folders",
+        annotations: { title: "List folders", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description:
             "List all folders in the vault. Use this to discover folder names before writing or listing notes. Returns the folder tree with note counts.",
         parameters: z.object({}),
@@ -279,6 +426,7 @@ export function registerTools(
 
     server.addTool({
         name: "list_tags",
+        annotations: { title: "List tags", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description:
             "List all tags used in the vault, sorted by frequency. Use this to discover tags before filtering with list_notes.",
         parameters: z.object({}),
@@ -301,142 +449,98 @@ export function registerTools(
 
     if (!readOnly) server.addTool({
         name: "edit_note",
-        description:
-            "Edit a note without rewriting it. Use 'append' (default) to add content to the end, 'prepend' to add after frontmatter, or 'replace' to swap old_text with new content. For replace, the old_text must match exactly once." + writeScopeNote,
+        description: "Edit a note using an authoritative version. Operations preserve bytes exactly: replace_all, append, prepend_body, or exactly-one literal replace_once." + writeScopeNote,
+        annotations: { title: "Edit note", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note, e.g. 'daily/2026-03-25.md'"),
-            content: z.string().describe("Text to append, prepend, or use as replacement for old_text"),
-            operation: z
-                .enum(["append", "prepend", "replace"])
-                .optional()
-                .describe("'append' (default): add to end. 'prepend': add after frontmatter. 'replace': swap old_text with content."),
-            old_text: z
-                .string()
-                .optional()
-                .describe("Required for replace operation. Exact text to find and replace. Must match exactly once."),
+            version: z.string().describe("Fresh opaque version from read_note or get_note_metadata"),
+            content: z.string().describe("Exact replacement or inserted Markdown; no newline is added or changed"),
+            operation: z.enum(["replace_all", "append", "prepend_body", "replace_once"]),
+            old_text: z.string().optional().describe("Literal required by replace_once; it must occur exactly once"),
         }),
-        execute: async ({ path, content: newContent, operation, old_text }) => {
-            if (!isPathWritable(path, writeFolders)) return denyWrite(path);
-            const existing = await vault.readNote(path);
-            if (existing === null) {
-                return `Note not found: ${path}`;
+        outputSchema: structuredNoteOutputSchema,
+        execute: async ({ path, version, content, operation, old_text }) => {
+            if (!isPathWritable(path, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
+            const read = await vault.readVersioned(path);
+            if (read.status !== "ok") return toToolResult(publicError(read.code));
+            if (read.note.version !== version) {
+                const backend: BackendMutationResult = { status: "conflict", code: "STALE_VERSION", effects: [{ kind: "note_updated", path, completed: false }] };
+                return finishMutation("edit", path, undefined, version, undefined, undefined, backend);
             }
-
-            let updated: string;
-            const op = operation ?? "append";
-
-            if (op === "replace") {
-                if (!old_text) {
-                    return "old_text is required for replace operation.";
-                }
-                const idx = existing.indexOf(old_text);
-                if (idx === -1) {
-                    return "old_text not found in note.";
-                }
-                if (existing.indexOf(old_text, idx + 1) !== -1) {
-                    return "old_text matches multiple times. Provide a longer, unique string.";
-                }
-                updated = existing.slice(0, idx) + newContent + existing.slice(idx + old_text.length);
-            } else if (op === "prepend") {
-                // Insert after frontmatter if present
-                const fmMatch = existing.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
-                if (fmMatch) {
-                    const afterFm = fmMatch[0].length;
-                    updated = existing.slice(0, afterFm) + newContent + "\n" + existing.slice(afterFm);
-                } else {
-                    updated = newContent + "\n" + existing;
-                }
-            } else {
-                // append
-                updated = existing.endsWith("\n") ? existing + newContent : existing + "\n" + newContent;
-            }
-
-            const ok = await vault.writeNote(path, updated);
-            if (!ok) {
-                return `Failed to edit note: ${path}`;
-            }
-            searchIndex.update(path, updated, Date.now());
-            const deepLink = makeDeepLink(vaultName, path);
-            return `Note edited (${op}): ${path}\n[Open in Obsidian](${deepLink})`;
+            let existing: string;
+            try { existing = markdownDecoder.decode(read.note.bytes); }
+            catch { return toToolResult(publicError("INTERNAL_ERROR")); }
+            const edit = applyNoteEdit(existing, operation, content, old_text);
+            if (!edit.ok) return toToolResult(publicError(edit.code));
+            const backend = await vault.replaceVersioned(path, version, new TextEncoder().encode(edit.content));
+            return finishMutation("edit", path, undefined, version, edit.content, edit.replacements, backend);
         },
     });
 
     if (!readOnly) server.addTool({
         name: "delete_note",
-        description: "Delete a note from the Obsidian vault." + writeScopeNote,
+        description: "Delete a note only if its authoritative version is still current. CouchDB deletion is logical." + writeScopeNote,
+        annotations: { title: "Delete note", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note to delete"),
+            version: z.string().describe("Fresh opaque version from read_note or get_note_metadata"),
         }),
-        execute: async ({ path }) => {
-            if (!isPathWritable(path, writeFolders)) return denyWrite(path);
-            const ok = await vault.deleteNote(path);
-            if (ok) searchIndex.remove(path);
-            return ok ? `Deleted: ${path}` : `Failed to delete: ${path}`;
+        outputSchema: structuredNoteOutputSchema,
+        execute: async ({ path, version }) => {
+            if (!isPathWritable(path, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
+            return finishMutation("delete", path, undefined, version, undefined, undefined, await vault.deleteVersioned(path, version));
         },
     });
 
     if (!readOnly) server.addTool({
         name: "move_note",
-        description:
-            "Move or rename a note. Use this to rename a note within the same folder, move it to a different folder, or both at once. Creates destination folders automatically." + writeScopeNote,
+        description: "Move a note with an authoritative source version and strict absent destination. The destination is created before conditional source deletion, so partial outcomes are explicit." + writeScopeNote,
+        annotations: { title: "Move note", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
         parameters: z.object({
             from: z.string().describe("Current path, e.g. 'daily/old-name.md'"),
             to: z.string().describe("New path, e.g. 'projects/new-name.md'"),
+            version: z.string().describe("Fresh opaque source version from read_note or get_note_metadata"),
         }),
-        execute: async ({ from, to }) => {
-            // Moving out of a folder deletes there; moving in writes there — both ends must be writable.
-            if (!isPathWritable(from, writeFolders)) return denyWrite(from);
-            if (!isPathWritable(to, writeFolders)) return denyWrite(to);
-            const content = await vault.readNote(from);
-            const ok = await vault.moveNote(from, to);
-            if (!ok) {
-                return `Failed to move: ${from} → ${to}`;
+        outputSchema: structuredNoteOutputSchema,
+        execute: async ({ from, to, version }) => {
+            if (!isPathWritable(from, writeFolders) || !isPathWritable(to, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
+            const backend = await vault.moveVersioned(from, to, version);
+            let content: string | undefined;
+            if ("note" in backend && backend.note) {
+                try { content = markdownDecoder.decode(backend.note.bytes); } catch {}
             }
-            searchIndex.remove(from);
-            // content === "" is an empty-but-present note: keep it indexed at the new path.
-            if (content !== null) searchIndex.update(to, content, Date.now());
-            const deepLink = makeDeepLink(vaultName, to);
-            return `Moved: ${from} → ${to}\n[Open in Obsidian](${deepLink})`;
+            return finishMutation("move", from, to, version, content, undefined, backend);
         },
     });
 
     server.addTool({
         name: "get_note_metadata",
-        description:
-            "Get metadata about a note without reading its full content. Returns frontmatter, tags, outgoing links, backlinks (notes that link to this one), size, and timestamps. Use this to navigate the knowledge graph.",
+        description: "Get note metadata and an authoritative opaque version without returning Markdown content. Backlinks include explicit index freshness.",
+        annotations: { title: "Get note metadata", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note, e.g. 'projects/my-project.md'"),
         }),
+        outputSchema: structuredNoteOutputSchema,
         execute: async ({ path }) => {
-            const meta = await vault.getMetadata(path);
-            if (!meta) {
-                return `Note not found: ${path}`;
-            }
-            const deepLink = makeDeepLink(vaultName, path);
-            const lines = [
-                `**${path}**`,
-                `Size: ${meta.size} bytes`,
-                `Created: ${new Date(meta.ctime).toISOString()}`,
-                `Modified: ${new Date(meta.mtime).toISOString()}`,
-            ];
-            if (Object.keys(meta.frontmatter).length > 0) {
-                lines.push(`\nFrontmatter:`);
-                for (const [k, v] of Object.entries(meta.frontmatter)) {
-                    lines.push(`  ${k}: ${v}`);
-                }
-            }
-            if (meta.tags.length > 0) {
-                lines.push(`\nTags: ${meta.tags.map((t) => `#${t}`).join(", ")}`);
-            }
-            if (meta.links.length > 0) {
-                lines.push(`\nOutgoing links: ${meta.links.join(", ")}`);
-            }
-            const backlinks = searchIndex.getBacklinks(path);
-            if (backlinks.length > 0) {
-                lines.push(`\nBacklinks: ${backlinks.join(", ")}`);
-            }
-            lines.push(`\n[Open in Obsidian](${deepLink})`);
-            return withIndexStatusNotice(lines.join("\n"), searchIndex);
+            const read = await vault.readVersioned(path);
+            if (read.status !== "ok") return toToolResult(publicError(read.code));
+            let markdown: string;
+            try { markdown = markdownDecoder.decode(read.note.bytes); }
+            catch { return toToolResult(publicError("INTERNAL_ERROR")); }
+            const metadata = parseFrontmatterAndLinks(markdown);
+            const value: StructuredNoteResult = {
+                schemaVersion, status: "ok",
+                result: {
+                    kind: "note", path: read.note.path, version: read.note.version, size: read.note.size,
+                    timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
+                    frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
+                    backlinks: searchIndex.getBacklinks(path), indexFreshness: indexFreshness(searchIndex),
+                    conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
+                    concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),
+                },
+                effects: [], warnings: [], recovery: recovery("none", "No recovery action is required."),
+            };
+            return toToolResult(value);
         },
     });
 }

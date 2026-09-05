@@ -217,20 +217,67 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 
 | Tool | Description |
 |---|---|
-| `read_note` | Read a note's markdown content by path |
-| `write_note` | Create or overwrite a note (replaces entire content) |
-| `edit_note` | Edit a note without rewriting it — append, prepend (after frontmatter), or replace exact text |
+| `read_note` | Read canonical Markdown plus an authoritative opaque version |
+| `create_note` | Create a Markdown note only when the path is absent |
+| `edit_note` | Conditionally edit with `replace_all`, `append`, `prepend_body`, or exact-one `replace_once` |
 | `list_folders` | List all folders in the vault with note counts — use to discover folder names |
 | `list_tags` | List all tags in the vault with counts — use to discover tags before filtering |
 | `list_notes` | List notes with timestamps. Filter by folder, name, tag, or date. Sort by name or modified. |
 | `search_notes` | Ranked full-text search across titles, aliases, headings, tags, and note bodies, with snippets and folder/tag/date filters |
-| `delete_note` | Delete a note |
-| `move_note` | Move or rename a note — works across folders, creates destination folders automatically |
-| `get_note_metadata` | Get frontmatter, tags, outgoing links, backlinks, size, and timestamps — navigate the knowledge graph |
+| `delete_note` | Conditionally delete using an authoritative version |
+| `move_note` | Conditionally move using an authoritative source version and absent destination |
+| `get_note_metadata` | Get metadata, graph links, index freshness, and an authoritative opaque version |
 
-Every tool response includes an [Obsidian deep link](https://help.obsidian.md/Extending+Obsidian/Obsidian+URI) (`obsidian://open?vault=...&file=...`) that works on Mac and iOS.
+The six single-note tools return both deterministic text and validated
+`structuredContent` under an advertised MCP `outputSchema`. The structured
+status is one of `ok`, `conflict`, `committed_with_conflict`, `partial`,
+`indeterminate`, or `error`, with stable error codes, explicit effects, and
+recovery guidance. Note-identifying successful results include a separate
+[Obsidian deep link](https://help.obsidian.md/Extending+Obsidian/Obsidian+URI).
+Listing and search contracts remain unchanged in 0.9.
 
 > "Add a bullet point to my daily note." "Find my notes about the MCP server and fix the typo in the second one."
+
+### Migrating clients to 0.9
+
+Version 0.9 deliberately removes `write_note`; there is no compatibility
+alias. Clients must:
+
+1. Use `create_note(path, content)` for create-only writes. An existing path
+   returns `DESTINATION_EXISTS`; a CouchDB tombstone returns
+   `RESTORE_REQUIRED`.
+2. Read `result.version` from `read_note` or `get_note_metadata` immediately
+   before `edit_note`, `delete_note`, or `move_note`, then pass it as
+   `version`. Versions are opaque, backend-bound, path-bound, and must never be
+   parsed or persisted as a durable identifier.
+3. For whole-note replacement, call `edit_note` with
+   `operation: "replace_all"`. The other operations concatenate or replace
+   exactly the supplied strings; the server does not add or normalize newlines.
+   `replace_once` also requires `old_text` and rejects zero or multiple
+   matches.
+4. Branch on `structuredContent.status`, not human-readable text. On
+   `conflict`, follow `recovery` and normally read again before deciding
+   whether to retry. On `partial` or `indeterminate`, inspect every effect
+   and authoritatively read all affected paths before another mutation.
+
+Local files use in-process writer serialization and atomic replacement, but
+external filesystem writers cannot participate in the same compare-and-swap;
+results therefore disclose `concurrency: "best_effort"`. CouchDB uses the
+current winning revision for strict compare-and-swap and discloses
+`concurrency: "strict_winner_cas"`. A move creates the absent destination
+first and conditionally deletes the source second, so a failed second step is
+reported as `partial` rather than pretending the move was atomic.
+
+For local vaults, `timestamps.created` uses filesystem birth time when the
+platform exposes it and falls back to inode change time otherwise. Atomic
+replacement swaps in a new inode, so platforms such as Linux cannot preserve
+the original birth time across an edit; `created` may therefore advance after
+an MCP edit. Existing file permissions are preserved across local edits and
+moves, while newly created notes default to mode `0600`.
+
+CouchDB notes with existing conflict branches remain readable, but all MCP
+mutations return `PRE_EXISTING_CONFLICT` until those branches are reconciled
+outside this six-tool surface. This is an intentional 0.9 limitation.
 
 ---
 
@@ -283,8 +330,8 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `MCP_STATELESS` | Optional | `false` | Set to `true` to serve each Streamable HTTP request independently without issuing a server session ID. This avoids session affinity for clients or proxies that open a fresh connection per tool call. Leave disabled for compatibility with clients that depend on session state. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
-| `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`write_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
-| `WRITE_FOLDERS` | Optional | — | Comma-separated list of vault-relative folders where writes are allowed (e.g. `MCP,Inbox`). When set, the whole vault stays readable but `write_note`, `edit_note`, `delete_note`, and `move_note` refuse paths outside these folders (`move_note` requires both source and destination to be writable). Enforced server-side, unlike `MCP_INSTRUCTIONS`. Matching is case-sensitive and folder-boundary-aware (`MCP` matches `MCP/note.md` but not `MCP-private/note.md`). Ignored when `READ_ONLY=true`; unset means the whole vault is writable. |
+| `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
+| `WRITE_FOLDERS` | Optional | — | Comma-separated list of vault-relative folders where writes are allowed (e.g. `MCP,Inbox`). When set, the whole vault stays readable but `create_note`, `edit_note`, `delete_note`, and `move_note` refuse paths outside these folders (`move_note` requires both source and destination to be writable). Enforced server-side, unlike `MCP_INSTRUCTIONS`. Matching is case-sensitive and folder-boundary-aware (`MCP` matches `MCP/note.md` but not `MCP-private/note.md`). Ignored when `READ_ONLY=true`; unset means the whole vault is writable. |
 | `MCP_INSTRUCTIONS` | Optional | — | Extra text appended to the server's MCP `instructions` (the string clients inject into the system prompt). Use this to bake vault-specific conventions into the server — e.g. folder structure, naming rules, folders to avoid — so they apply across every MCP client without per-client config. Best-effort: not all clients respect `instructions`. |
 | `MCP_INSTRUCTIONS_FILE` | Optional | — | Path to a file (e.g. markdown) whose contents are appended to the MCP `instructions`. Easier than `MCP_INSTRUCTIONS` for multi-line conventions. If both are set, the file wins and `MCP_INSTRUCTIONS` is ignored (with a startup warning). Missing/unreadable file or files larger than 32 KB are fatal startup errors. **Store this file somewhere only the service user can write (e.g. `chmod 600`)** — its contents land in every MCP session's system prompt, so write access to it = prompt-injection access to every client. |
 

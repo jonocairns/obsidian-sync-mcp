@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Breaking changes
+- Introduce the versioned structured single-note core for 0.9.0. Remove `write_note` with no runtime alias; clients must use strict-absence `create_note` or version-guarded `edit_note` with `replace_all`.
+- Require a fresh opaque version from `read_note` or `get_note_metadata` for edit, delete, and move. Versions are bound to the backend, path, and authoritative state and must not be parsed.
+
+### Features
+- Return strict `ok`, `conflict`, `committed_with_conflict`, `partial`, `indeterminate`, and `error` structured outcomes for all six single-note tools, with stable codes, exact effects, recovery strategies, genuine MCP `outputSchema`/`structuredContent`, and deterministic text fallback.
+- Preserve exact Markdown strings for `replace_all`, `append`, `prepend_body`, and exact-one `replace_once` without hidden newline normalization.
+- Add CouchDB winning-revision compare-and-swap, explicit pre-existing conflict and tombstone handling, and destination-first moves that report non-atomic outcomes honestly.
+- Add local atomic replacement, symlink-safe containment, process-local writer serialization, exclusive move destinations, and explicit `best_effort` concurrency disclosure.
+
+### Reliability
+- Keep committed vault mutations successful when subsequent index maintenance fails, while reporting a stale index and the failed index effect.
+- Redact Markdown, raw note paths, and opaque versions from operation and LiveSync logs.
+- Decode CouchDB `newnote` entries as binary data regardless of their Markdown path, preserving exact stored bytes.
+- Preserve existing local file permissions across atomic edits and moves; use filesystem birth time for created timestamps when available.
+- Refuse MCP mutations on CouchDB notes with unresolved conflict branches until they are reconciled externally.
+- Count overlapping `replace_once` literals so exactly-once ambiguity is reported honestly.
+- Index committed moves from the backend result and report stale index state when committed destination content is unavailable.
+
+### Tests
+- Add focused exact-edit, local atomicity/concurrency/symlink, structured status, raw MCP, HTTP, privacy-log, and real CouchDB winner-CAS coverage.
+
 ### Fixes
 - Fail startup with an actionable message when `DATA_DIR` is not writable. v0.8.1 moved the container to the unprivileged `node` user (uid 1000), so a data volume created by an earlier root-running image left the server in a crash loop on a raw `EACCES` from inside the search index, and auth-token saves failed silently. The check names the directory, its owner, and the one-time `chown`/`chmod` that fixes it; the README documents the upgrade step.
 
