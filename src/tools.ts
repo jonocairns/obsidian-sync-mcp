@@ -114,7 +114,9 @@ export function registerTools(
                     searchIndex.remove(path);
                 } else if (operation === "move") {
                     if (backend.effects.some((effect) => effect.kind === "source_deleted" && effect.completed)) searchIndex.remove(path);
-                    if (content !== undefined && destinationPath && backend.effects.some((effect) => effect.kind === "destination_created" && effect.completed)) {
+                    const destinationCommitted = backend.effects.some((effect) => effect.kind === "destination_created" && effect.completed);
+                    if (destinationCommitted) {
+                        if (content === undefined || !destinationPath) throw new Error("Committed destination content unavailable for indexing");
                         searchIndex.update(destinationPath, content, ("note" in backend ? backend.note?.mtime : undefined) ?? Date.now());
                     }
                 } else if (content !== undefined) {
@@ -502,12 +504,11 @@ export function registerTools(
         outputSchema: structuredNoteOutputSchema,
         execute: async ({ from, to, version }) => {
             if (!isPathWritable(from, writeFolders) || !isPathWritable(to, writeFolders)) return toToolResult(publicError("WRITE_DENIED"));
-            const read = await vault.readVersioned(from);
-            let content: string | undefined;
-            if (read.status === "ok") {
-                try { content = markdownDecoder.decode(read.note.bytes); } catch {}
-            }
             const backend = await vault.moveVersioned(from, to, version);
+            let content: string | undefined;
+            if ("note" in backend && backend.note) {
+                try { content = markdownDecoder.decode(backend.note.bytes); } catch {}
+            }
             return finishMutation("move", from, to, version, content, undefined, backend);
         },
     });

@@ -116,6 +116,36 @@ describe("structured mutation outcomes", () => {
         assert.equal(result.isError, true);
         assert.deepEqual(result.structuredContent.effects.slice(0, 2), effects);
         assert.equal(result.structuredContent.recovery.strategy, "read_then_retry");
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "moved.md",
+            completed: false,
+        });
+    });
+
+    it("indexes a committed move from the backend result even when a pre-move read would fail", async () => {
+        const index = new SearchIndex();
+        let indexed: { path: string; content: string } | undefined;
+        index.update = (path, content) => { indexed = { path, content }; };
+        const result = await call(
+            toolsFor(backend({
+                status: "ok",
+                note: { ...note, path: "moved.md", bytes: encoder.encode("committed body") },
+                effects: [
+                    { kind: "destination_created", path: "moved.md", completed: true },
+                    { kind: "source_deleted", path: "note.md", completed: true },
+                ],
+            }, { status: "error", code: "BACKEND_UNAVAILABLE" }), index),
+            "move_note",
+            { from: "note.md", to: "moved.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "ok");
+        assert.deepEqual(indexed, { path: "moved.md", content: "committed body" });
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "moved.md",
+            completed: true,
+        });
     });
 
     it("marks unknown commit state indeterminate and warns against blind retry", async () => {

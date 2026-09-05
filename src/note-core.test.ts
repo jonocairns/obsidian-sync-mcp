@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyNoteEdit } from "./note-edit.js";
@@ -31,6 +31,7 @@ describe("exact edit transformations", () => {
         assert.deepEqual(applyNoteEdit("abc", "replace_once", "x", "z"), { ok: false, code: "LITERAL_NOT_FOUND", matches: 0 });
         assert.deepEqual(applyNoteEdit("a a", "replace_once", "x", "a"), { ok: false, code: "LITERAL_AMBIGUOUS", matches: 2 });
         assert.deepEqual(applyNoteEdit("abc", "replace_once", "X", "b"), { ok: true, content: "aXc", replacements: 1 });
+        assert.deepEqual(applyNoteEdit("aaa", "replace_once", "X", "aa"), { ok: false, code: "LITERAL_AMBIGUOUS", matches: 2 });
     });
 });
 
@@ -98,6 +99,28 @@ describe("local versioned backend", () => {
         assert.equal(moved.status, "conflict");
         assert.equal(await readFile(join(root, "to.md"), "utf8"), "destination");
         assert.equal(await readFile(join(root, "from.md"), "utf8"), "source");
+    });
+
+    it("reports filesystem birth time as created and preserves mode across replace and move", async () => {
+        const { root, backend } = await vault();
+        const source = join(root, "from.md");
+        await writeFile(source, "source");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        await chmod(source, 0o640);
+        const sourceStat = await stat(source, { bigint: true });
+        const expectedCreated = Number((sourceStat.birthtimeNs > 0n ? sourceStat.birthtimeNs : sourceStat.ctimeNs) / 1_000_000n);
+        const initial = await backend.readVersioned("from.md");
+        assert.equal(initial.status, "ok");
+        if (initial.status !== "ok") return;
+        assert.equal(initial.note.ctime, expectedCreated);
+
+        const replaced = await backend.replaceVersioned("from.md", initial.note.version, new TextEncoder().encode("updated"));
+        assert.equal(replaced.status, "ok");
+        assert.equal((await stat(source)).mode & 0o777, 0o640);
+        if (replaced.status !== "ok" || !replaced.note) return;
+        const moved = await backend.moveVersioned("from.md", "to.md", replaced.note.version);
+        assert.equal(moved.status, "ok");
+        assert.equal((await stat(join(root, "to.md"))).mode & 0o777, 0o640);
     });
 
     it("rejects absent targets below a symlinked parent outside the vault", async () => {

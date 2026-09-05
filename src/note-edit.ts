@@ -9,7 +9,7 @@ function literalCount(value: string, needle: string): number {
         const at = value.indexOf(needle, from);
         if (at === -1) return count;
         count++;
-        from = at + needle.length;
+        from = at + 1;
     }
 }
 

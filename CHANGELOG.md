@@ -15,6 +15,11 @@
 ### Reliability
 - Keep committed vault mutations successful when subsequent index maintenance fails, while reporting a stale index and the failed index effect.
 - Redact Markdown, raw note paths, and opaque versions from operation and LiveSync logs.
+- Decode CouchDB `newnote` entries as binary data regardless of their Markdown path, preserving exact stored bytes.
+- Preserve existing local file permissions across atomic edits and moves; use filesystem birth time for created timestamps when available.
+- Refuse MCP mutations on CouchDB notes with unresolved conflict branches until they are reconciled externally.
+- Count overlapping `replace_once` literals so exactly-once ambiguity is reported honestly.
+- Index committed moves from the backend result and report stale index state when committed destination content is unavailable.
 
 ### Tests
 - Add focused exact-edit, local atomicity/concurrency/symlink, structured status, raw MCP, HTTP, privacy-log, and real CouchDB winner-CAS coverage.

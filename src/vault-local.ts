@@ -109,15 +109,17 @@ export class LocalVault implements VaultBackend {
             const beforeId = this.statIdentity(before);
             const afterId = this.statIdentity(after);
             if (JSON.stringify(beforeId) !== JSON.stringify(afterId)) continue;
+            const createdNs = after.birthtimeNs > 0n ? after.birthtimeNs : after.ctimeNs;
             return {
                 path: canonical,
                 bytes,
                 version: encodeNoteVersion({ backend: "local:" + this.root, path: canonical, state: "exists", mutation: { ...afterId, contentHash: createHash("sha256").update(bytes).digest("base64url") } }),
                 size: Number(after.size),
-                ctime: Number(after.ctimeNs / 1_000_000n),
+                ctime: Number(createdNs / 1_000_000n),
                 mtime: Number(after.mtimeNs / 1_000_000n),
                 conflicts: [],
                 concurrency: this.concurrency,
+                backendState: { mode: Number(after.mode & 0o777n) },
             };
         }
         throw Object.assign(new Error("Unable to obtain a coherent file snapshot"), { code: "BACKEND_UNAVAILABLE" });
@@ -161,14 +163,14 @@ export class LocalVault implements VaultBackend {
         try { await handle.sync(); } finally { await handle.close(); }
     }
 
-    private async createVersionedUnlocked(path: string, bytes: Uint8Array): Promise<BackendMutationResult> {
+    private async createVersionedUnlocked(path: string, bytes: Uint8Array, mode = 0o600): Promise<BackendMutationResult> {
         const effect = { kind: "note_created" as const, path, completed: false };
         try {
             const full = await this.safePath(path);
             await mkdir(dirname(full), { recursive: true });
             await this.safePath(path);
-            const handle = await open(full, "wx", 0o600);
-            try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+            const handle = await open(full, "wx", mode);
+            try { await handle.writeFile(bytes); await handle.chmod(mode); await handle.sync(); } finally { await handle.close(); }
             effect.completed = true;
             await this.syncDirectory(full);
             const read = await this.readVersioned(path);
@@ -198,8 +200,9 @@ export class LocalVault implements VaultBackend {
                 if (initial.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };
                 const full = await this.safePath(canonical);
                 temporary = full + ".tmp-" + randomUUID();
-                const handle = await open(temporary, "wx", 0o600);
-                try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+                const mode = (initial.note.backendState as { mode: number }).mode;
+                const handle = await open(temporary, "wx", mode);
+                try { await handle.writeFile(bytes); await handle.chmod(mode); await handle.sync(); } finally { await handle.close(); }
                 const finalCheck = await this.readVersioned(canonical);
                 if (finalCheck.status !== "ok" || finalCheck.note.version !== expectedVersion) {
                     await unlink(temporary).catch(() => {});
@@ -254,7 +257,8 @@ export class LocalVault implements VaultBackend {
             const current = await this.readVersioned(source);
             if (current.status !== "ok") return { status: "error", code: current.code, effects };
             if (current.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects };
-            const created = await this.createVersionedUnlocked(destination, current.note.bytes);
+            const sourceMode = (current.note.backendState as { mode: number }).mode;
+            const created = await this.createVersionedUnlocked(destination, current.note.bytes, sourceMode);
             effects[0].completed = created.effects.some((effect) => effect.completed);
             if (created.status !== "ok") return { ...created, effects };
             effects[0].completed = true;

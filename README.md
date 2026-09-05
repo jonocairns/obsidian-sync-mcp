@@ -268,6 +268,17 @@ current winning revision for strict compare-and-swap and discloses
 first and conditionally deletes the source second, so a failed second step is
 reported as `partial` rather than pretending the move was atomic.
 
+For local vaults, `timestamps.created` uses filesystem birth time when the
+platform exposes it and falls back to inode change time otherwise. Atomic
+replacement swaps in a new inode, so platforms such as Linux cannot preserve
+the original birth time across an edit; `created` may therefore advance after
+an MCP edit. Existing file permissions are preserved across local edits and
+moves, while newly created notes default to mode `0600`.
+
+CouchDB notes with existing conflict branches remain readable, but all MCP
+mutations return `PRE_EXISTING_CONFLICT` until those branches are reconciled
+outside this six-tool surface. This is an intentional 0.9 limitation.
+
 ---
 
 ## Authentication

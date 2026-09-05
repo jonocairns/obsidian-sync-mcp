@@ -4,7 +4,8 @@
 
 import { DirectFileManipulator } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
 import type { DirectFileManipulatorOptions } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
-import { createBinaryBlob, createTextBlob, readAsBlob } from "../lib/livesync-commonlib/src/common/utils.ts";
+import { createBinaryBlob, createTextBlob } from "../lib/livesync-commonlib/src/common/utils.ts";
+import { decodeBinary } from "../lib/livesync-commonlib/src/string_and_binary/convert.ts";
 import type { FilePathWithPrefix } from "../lib/livesync-commonlib/src/common/types.ts";
 import type { MetaEntry } from "../lib/livesync-commonlib/src/API/DirectFileManipulatorV2.ts";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
@@ -242,7 +243,9 @@ export class Vault implements VaultBackend {
                 ...(entry._conflicts ?? []).map((revision: string) => ({ revision, deleted: false })),
                 ...(entry._deleted_conflicts ?? []).map((revision: string) => ({ revision, deleted: true })),
             ].sort((a, b) => a.revision.localeCompare(b.revision));
-            const bytes = new Uint8Array(await readAsBlob(entry).arrayBuffer());
+            const bytes = entry.type === "newnote" || entry.datatype === "newnote"
+                ? new Uint8Array(decodeBinary(entry.data))
+                : new TextEncoder().encode(Array.isArray(entry.data) ? entry.data.join("") : String(entry.data ?? ""));
             const note: VersionedNote = {
                 path,
                 bytes,
@@ -303,7 +306,6 @@ export class Vault implements VaultBackend {
             return { status: "ok", note: after.note, effects: [effect] };
         } catch (error: any) {
             if (this.isConflictError(error)) return { status: "conflict", code: expectedRevision ? "STALE_VERSION" : "DESTINATION_EXISTS", effects: [effect] };
-            if (!effect.completed) return { status: "indeterminate", effects: [effect] };
             return { status: "indeterminate", effects: [effect] };
         }
     }
