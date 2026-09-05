@@ -54,9 +54,15 @@ async function mcpCall(method: string, params: any, id = 1): Promise<any> {
     return parseSSE(await resp.text());
 }
 
-async function callTool(name: string, args: any = {}): Promise<string> {
+async function callToolResult(name: string, args: any = {}): Promise<any> {
     const resp = await mcpCall("tools/call", { name, arguments: args });
-    const text = resp?.result?.content?.[0]?.text;
+    assert.ok(resp?.result, `Tool ${name} returned no result`);
+    return resp.result;
+}
+
+async function callTool(name: string, args: any = {}): Promise<string> {
+    const result = await callToolResult(name, args);
+    const text = result?.content?.[0]?.text;
     assert.ok(text, `Tool ${name} returned no text content`);
     return text;
 }
@@ -87,6 +93,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
                     MCP_PROTOCOL_VERSION,
                     "server should negotiate MCP protocol 2025-11-25",
                 );
+                assert.equal(lastInitResult?.result?.serverInfo?.version, "0.9.0");
 
                 const initialized = await fetch(BASE, {
                     method: "POST",
@@ -180,42 +187,91 @@ describe("E2E: list_notes", () => {
 });
 
 describe("E2E: read_note", () => {
-    it("reads content with deep link", async () => {
-        const text = await callTool("read_note", { path: "Welcome.md" });
-        assert.ok(text.includes("Hello world"));
-        assert.ok(text.includes("obsidian://open"));
+    it("advertises strict schemas and returns structured canonical Markdown", async () => {
+        const listed = await mcpCall("tools/list", {});
+        const tools: any[] = listed.result.tools;
+        const names = tools.map((tool) => tool.name);
+        assert.ok(!names.includes("write_note"));
+        for (const name of ["read_note", "get_note_metadata", "create_note", "edit_note", "delete_note", "move_note"]) {
+            const tool = tools.find((candidate) => candidate.name === name);
+            assert.equal(tool.outputSchema.type, "object", name + " must advertise an object-root output schema");
+            assert.equal(tool.outputSchema.anyOf.length, 6, name + " must advertise all six status variants");
+            assert.deepEqual(
+                tool.outputSchema.anyOf.map((variant: any) => variant.properties.status.const),
+                ["ok", "conflict", "committed_with_conflict", "partial", "indeterminate", "error"],
+            );
+            assert.ok(tool.outputSchema.anyOf.every((variant: any) => variant.additionalProperties === false));
+        }
+        const result = await callToolResult("read_note", { path: "Welcome.md" });
+        assert.equal(result.isError, false);
+        assert.equal(result.structuredContent.status, "ok");
+        assert.equal(result.structuredContent.result.markdown.includes("Hello world"), true);
+        assert.match(result.structuredContent.result.version, /^nv1\./);
+        assert.equal(result.structuredContent.result.concurrency, "best_effort");
+        assert.ok(result.content[0].text.startsWith("---\ntitle: Welcome"));
+        assert.ok(result.content[0].text.includes("obsidian://open"));
+    });
+
+    it("returns schema-valid structured errors with isError", async () => {
+        const result = await callToolResult("read_note", { path: "missing.md" });
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent.status, "error");
+        assert.equal(result.structuredContent.error.code, "NOTE_NOT_FOUND");
+        assert.equal(result.structuredContent.recovery.strategy, "change_request");
+    });
+
+    it("does not expose non-UTF-8 backend bytes as public note content", async () => {
+        await writeFile(join(vaultDir, "invalid-utf8.md"), Buffer.from([0xff, 0xfe]));
+        const result = await callToolResult("read_note", { path: "invalid-utf8.md" });
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent.status, "error");
+        assert.equal(result.structuredContent.error.code, "INTERNAL_ERROR");
+        assert.equal("result" in result.structuredContent, false);
     });
 });
 
-describe("E2E: write_note", () => {
-    it("creates a new note", async () => {
-        const text = await callTool("write_note", { path: "ci-test.md", content: "# CI Test\nWritten by e2e" });
-        assert.ok(text.includes("Note saved"));
+describe("E2E: create_note", () => {
+    it("creates only when absent", async () => {
+        const result = await callToolResult("create_note", { path: "ci-test.md", content: "# CI Test\nWritten by e2e" });
+        assert.equal(result.structuredContent.status, "ok");
         assert.ok(existsSync(join(vaultDir, "ci-test.md")));
+        const conflict = await callToolResult("create_note", { path: "ci-test.md", content: "overwrite" });
+        assert.equal(conflict.isError, true);
+        assert.equal(conflict.structuredContent.status, "conflict");
+        assert.equal(conflict.structuredContent.error.code, "DESTINATION_EXISTS");
     });
 });
 
 describe("E2E: edit_note", () => {
-    it("appends content", async () => {
-        const text = await callTool("edit_note", { path: "Welcome.md", content: "Appended line" });
-        assert.ok(text.includes("Note edited"));
-        const read = await callTool("read_note", { path: "Welcome.md" });
-        assert.ok(read.includes("Appended line"));
+    async function version(path: string): Promise<string> {
+        return (await callToolResult("read_note", { path })).structuredContent.result.version;
+    }
+
+    it("applies exact append and rejects stale versions", async () => {
+        const old = await version("Welcome.md");
+        const result = await callToolResult("edit_note", { path: "Welcome.md", version: old, operation: "append", content: "Appended line" });
+        assert.equal(result.structuredContent.status, "ok");
+        const stale = await callToolResult("edit_note", { path: "Welcome.md", version: old, operation: "append", content: "bad" });
+        assert.equal(stale.structuredContent.status, "conflict");
+        assert.equal(stale.structuredContent.error.code, "STALE_VERSION");
+        assert.equal(stale.structuredContent.recovery.strategy, "read_then_retry");
     });
 
-    it("prepends after frontmatter", async () => {
-        const text = await callTool("edit_note", { path: "Welcome.md", content: "Prepended line", operation: "prepend" });
-        assert.ok(text.includes("Note edited"));
-        const read = await callTool("read_note", { path: "Welcome.md" });
-        assert.ok(read.includes("Prepended line"));
+    it("prepends body without inserting a newline", async () => {
+        const current = await version("Welcome.md");
+        const result = await callToolResult("edit_note", { path: "Welcome.md", version: current, operation: "prepend_body", content: "Prepended line" });
+        assert.equal(result.structuredContent.status, "ok");
+        const read = await callToolResult("read_note", { path: "Welcome.md" });
+        assert.ok(read.structuredContent.result.markdown.includes("---\nPrepended line# Welcome"));
     });
 
-    it("replaces exact text", async () => {
-        const text = await callTool("edit_note", { path: "Welcome.md", content: "Goodbye world", operation: "replace", old_text: "Hello world" });
-        assert.ok(text.includes("Note edited"));
-        const read = await callTool("read_note", { path: "Welcome.md" });
-        assert.ok(read.includes("Goodbye world"));
-        assert.ok(!read.includes("Hello world"));
+    it("replaces exactly once and reports ambiguity", async () => {
+        let current = await version("Welcome.md");
+        const result = await callToolResult("edit_note", { path: "Welcome.md", version: current, operation: "replace_once", old_text: "Hello world", content: "Goodbye world" });
+        assert.equal(result.structuredContent.result.replacements, 1);
+        current = await version("Welcome.md");
+        const ambiguous = await callToolResult("edit_note", { path: "Welcome.md", version: current, operation: "replace_once", old_text: "e", content: "x" });
+        assert.equal(ambiguous.structuredContent.error.code, "LITERAL_AMBIGUOUS");
     });
 });
 
@@ -236,28 +292,29 @@ describe("E2E: list_tags", () => {
 });
 
 describe("E2E: get_note_metadata", () => {
-    it("returns frontmatter and tags", async () => {
-        const text = await callTool("get_note_metadata", { path: "Welcome.md" });
-        assert.ok(text.includes("intro"));
-        assert.ok(text.includes("Backlinks"));
-    });
-
-    it("returns outgoing links", async () => {
-        const text = await callTool("get_note_metadata", { path: "projects/test.md" });
-        assert.ok(text.includes("Outgoing links"));
-        assert.ok(text.includes("Welcome"));
-    });
-
-    it("returns backlinks", async () => {
-        const text = await callTool("get_note_metadata", { path: "Welcome.md" });
-        assert.ok(text.includes("projects/test.md"));
+    it("returns structured metadata, backlinks, freshness, and no content", async () => {
+        const result = await callToolResult("get_note_metadata", { path: "Welcome.md" });
+        const metadata = result.structuredContent.result;
+        assert.ok(metadata.tags.includes("intro"));
+        assert.ok(metadata.backlinks.includes("projects/test.md"));
+        assert.ok(["current", "building"].includes(metadata.indexFreshness));
+        assert.equal("markdown" in metadata, false);
+        assert.match(metadata.version, /^nv1\./);
+        const outgoing = await callToolResult("get_note_metadata", { path: "projects/test.md" });
+        assert.ok(outgoing.structuredContent.result.outgoingLinks.includes("Welcome"));
     });
 });
 
 describe("E2E: move_note", () => {
     it("moves a note across folders", async () => {
-        const text = await callTool("move_note", { from: "ci-test.md", to: "archive/ci-test.md" });
-        assert.ok(text.includes("Moved"));
+        const read = await callToolResult("read_note", { path: "ci-test.md" });
+        const result = await callToolResult("move_note", {
+            from: "ci-test.md", to: "archive/ci-test.md", version: read.structuredContent.result.version,
+        });
+        assert.equal(result.structuredContent.status, "ok");
+        assert.deepEqual(result.structuredContent.effects.filter((effect: any) => effect.kind !== "index_updated").map((effect: any) => [effect.kind, effect.completed]), [
+            ["destination_created", true], ["source_deleted", true],
+        ]);
         assert.ok(!existsSync(join(vaultDir, "ci-test.md")));
         assert.ok(existsSync(join(vaultDir, "archive/ci-test.md")));
     });
@@ -265,8 +322,9 @@ describe("E2E: move_note", () => {
 
 describe("E2E: delete_note", () => {
     it("deletes a note", async () => {
-        const text = await callTool("delete_note", { path: "archive/ci-test.md" });
-        assert.ok(text.includes("Deleted"));
+        const read = await callToolResult("read_note", { path: "archive/ci-test.md" });
+        const result = await callToolResult("delete_note", { path: "archive/ci-test.md", version: read.structuredContent.result.version });
+        assert.equal(result.structuredContent.status, "ok");
         assert.ok(!existsSync(join(vaultDir, "archive/ci-test.md")));
     });
 });
@@ -281,15 +339,15 @@ describe("E2E: READ_ONLY mode", () => {
 
         const list = await mcpCall("tools/list", {});
         const tools: string[] = (list?.result?.tools ?? []).map((t: any) => t.name);
-        for (const w of ["write_note", "edit_note", "delete_note", "move_note"]) {
+        for (const w of ["create_note", "edit_note", "delete_note", "move_note"]) {
             assert.ok(!tools.includes(w), `${w} should not be registered in READ_ONLY mode`);
         }
         for (const r of ["read_note", "list_notes", "list_folders", "list_tags", "get_note_metadata"]) {
             assert.ok(tools.includes(r), `${r} should remain available in READ_ONLY mode`);
         }
 
-        const resp = await mcpCall("tools/call", { name: "write_note", arguments: { path: "blocked.md", content: "x" } });
-        assert.ok(resp?.error, "write_note call should return an error");
+        const resp = await mcpCall("tools/call", { name: "create_note", arguments: { path: "blocked.md", content: "x" } });
+        assert.ok(resp?.error, "create_note call should return an error");
         assert.ok(!existsSync(join(vaultDir, "blocked.md")), "no file should be created when write is blocked");
     });
 });
@@ -299,7 +357,7 @@ describe("E2E: MCP_INSTRUCTIONS", () => {
         await stopServer();
         await startServer({ VAULT_PATH: vaultDir, VAULT_NAME: "TestVault", MCP_INSTRUCTIONS: "inline-rule-XYZ" });
         const instr: string = lastInitResult?.result?.instructions ?? "";
-        assert.ok(instr.includes("Access and manage an Obsidian vault"), "base instructions still present");
+        assert.ok(instr.includes("Access and manage Markdown notes"), "base instructions still present");
         assert.ok(instr.includes("inline-rule-XYZ"), "inline env contents appended");
     });
 
@@ -314,7 +372,7 @@ describe("E2E: MCP_INSTRUCTIONS", () => {
             MCP_INSTRUCTIONS_FILE: instructionsFile,
         });
         const instr: string = lastInitResult?.result?.instructions ?? "";
-        assert.ok(instr.includes("Access and manage an Obsidian vault"), "base instructions still present");
+        assert.ok(instr.includes("Access and manage Markdown notes"), "base instructions still present");
         assert.ok(instr.includes("file-rule-ABC"), "file contents appended");
         assert.ok(instr.includes("file-rule-DEF"), "file contents appended (multiline)");
         assert.ok(!instr.includes("inline-rule-XYZ"), "inline env ignored when file is set");
@@ -386,6 +444,16 @@ describe("E2E: stateless Streamable HTTP", () => {
             !serverLogs.includes("could not infer client capabilities"),
             "FastMCP v4 should not poll unavailable client capabilities in stateless mode",
         );
+
+        const secretPath = "privacy-do-not-log-this-path.md";
+        const secretContent = "privacy-do-not-log-this-content";
+        const created = await callToolResult("create_note", { path: secretPath, content: secretContent });
+        const secretVersion = created.structuredContent.result.version;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        assert.ok(serverLogs.includes("[tool] create_note invoked"), "debug logs retain operation-level diagnostics");
+        for (const secret of [secretPath, secretContent, secretVersion]) {
+            assert.ok(!serverLogs.includes(secret), "logs must not contain note paths, Markdown, or opaque versions");
+        }
     });
 });
 

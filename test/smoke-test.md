@@ -29,7 +29,7 @@ list_notes(sort_by='modified', limit=5)
 ### 2. Create project notes with tags, links, and frontmatter
 
 ```
-write_note(path='test-smoke/project.md', content="""---
+create_note(path='test-smoke/project.md', content="""---
 title: Smoke Test Project
 tags: [smoke-test, project]
 status: active
@@ -44,7 +44,7 @@ A project for testing MCP tools.
 - [[test-smoke/daily]]
 """)
 
-write_note(path='test-smoke/notes.md', content="""---
+create_note(path='test-smoke/notes.md', content="""---
 tags: [smoke-test, reference]
 ---
 
@@ -55,7 +55,7 @@ Reference material for [[test-smoke/project]].
 CouchDB uses a _changes feed for real-time sync. Compaction removes old revisions.
 """)
 
-write_note(path='test-smoke/daily.md', content="""---
+create_note(path='test-smoke/daily.md', content="""---
 tags: [smoke-test, daily]
 ---
 
@@ -123,7 +123,9 @@ get_note_metadata(path='test-smoke/notes.md')
 ### 7. Edit — append
 
 ```
-edit_note(path='test-smoke/daily.md', content='- Append test passed')
+get_note_metadata(path='test-smoke/daily.md')  # save result.version as DAILY_VERSION
+edit_note(path='test-smoke/daily.md', version=DAILY_VERSION, operation='append', content='
+- Append test passed')
 read_note(path='test-smoke/daily.md')
 ```
 
@@ -134,7 +136,10 @@ read_note(path='test-smoke/daily.md')
 ### 8. Edit — prepend (after frontmatter)
 
 ```
-edit_note(path='test-smoke/project.md', content='> Status: All tests passing', operation='prepend')
+get_note_metadata(path='test-smoke/project.md')  # save result.version as PROJECT_VERSION
+edit_note(path='test-smoke/project.md', version=PROJECT_VERSION, content='> Status: All tests passing
+
+', operation='prepend_body')
 read_note(path='test-smoke/project.md')
 ```
 
@@ -145,7 +150,8 @@ read_note(path='test-smoke/project.md')
 ### 9. Edit — replace
 
 ```
-edit_note(path='test-smoke/project.md', content='status: complete', operation='replace', old_text='status: active')
+get_note_metadata(path='test-smoke/project.md')  # refresh PROJECT_VERSION
+edit_note(path='test-smoke/project.md', version=PROJECT_VERSION, content='status: complete', operation='replace_once', old_text='status: active')
 read_note(path='test-smoke/project.md')
 ```
 
@@ -156,7 +162,8 @@ read_note(path='test-smoke/project.md')
 ### 10. Move note
 
 ```
-move_note(from='test-smoke/notes.md', to='test-smoke/archive/notes.md')
+get_note_metadata(path='test-smoke/notes.md')  # save result.version as NOTES_VERSION
+move_note(from='test-smoke/notes.md', to='test-smoke/archive/notes.md', version=NOTES_VERSION)
 list_folders()
 ```
 
@@ -183,9 +190,12 @@ list_notes(modified_after='invalid-date')
 ### 12. Cleanup
 
 ```
-delete_note(path='test-smoke/project.md')
-delete_note(path='test-smoke/daily.md')
-delete_note(path='test-smoke/archive/notes.md')
+get_note_metadata(path='test-smoke/project.md')       # save PROJECT_VERSION
+get_note_metadata(path='test-smoke/daily.md')         # save DAILY_VERSION
+get_note_metadata(path='test-smoke/archive/notes.md') # save NOTES_VERSION
+delete_note(path='test-smoke/project.md', version=PROJECT_VERSION)
+delete_note(path='test-smoke/daily.md', version=DAILY_VERSION)
+delete_note(path='test-smoke/archive/notes.md', version=NOTES_VERSION)
 list_notes(folder='test-smoke')
 ```
 
@@ -196,3 +206,6 @@ list_notes(folder='test-smoke')
 ## Pass Criteria
 
 All 12 steps return expected results. No errors except the intentional invalid date test.
+Each single-note call includes `structuredContent`; successful writes report
+`status: ok`. Do not reuse a version after any mutation. Investigate any
+`partial` or `indeterminate` result before cleanup.

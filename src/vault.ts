@@ -4,15 +4,16 @@
 
 import { DirectFileManipulator } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
 import type { DirectFileManipulatorOptions } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
-import { createTextBlob } from "../lib/livesync-commonlib/src/common/utils.ts";
+import { createBinaryBlob, createTextBlob, readAsBlob } from "../lib/livesync-commonlib/src/common/utils.ts";
 import type { FilePathWithPrefix } from "../lib/livesync-commonlib/src/common/types.ts";
 import type { MetaEntry } from "../lib/livesync-commonlib/src/API/DirectFileManipulatorV2.ts";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
 import { clearHandlers } from "../lib/livesync-commonlib/src/replication/SyncParamsHandler.ts";
 import { parseFrontmatterAndLinks } from "./parse.js";
-import type { VaultBackend, NoteInfo, NoteListing } from "./vault-backend.js";
+import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, BackendReadResult, VersionedNote } from "./vault-backend.js";
 import { deriveContent } from "./index-sync.js";
 import { classifyIds, type IdFormat } from "./id-format.js";
+import { encodeNoteVersion } from "./note-version.js";
 
 export interface VaultConfig {
     couchdbUrl: string;
@@ -24,6 +25,7 @@ export interface VaultConfig {
 }
 
 export class Vault implements VaultBackend {
+    readonly concurrency = "strict_winner_cas" as const;
     private manipulator: DirectFileManipulator;
     private passphrase: string | undefined;
     private config: VaultConfig;
@@ -200,19 +202,187 @@ export class Vault implements VaultBackend {
     }
 
     private validatePath(path: string): void {
-        if (!path || path.startsWith("/") || path.includes("\0") || path.includes("..") || path.length > 1000) {
-            throw new Error("Invalid path");
+        const segments = path.split("/");
+        if (!path || path.startsWith("/") || path.includes("\\") || path.includes("\0") || path.length > 1000 || !path.endsWith(".md") ||
+            segments.some((part) => !part || part === "." || part === "..")) {
+            throw Object.assign(new Error("Invalid path"), { code: "INVALID_PATH" });
+        }
+    }
+
+    private async tombstoneExists(path: string): Promise<boolean> {
+        const id = await this.manipulator.path2id(path as FilePathWithPrefix);
+        const row = (await this.manipulator.liveSyncLocalDB.localDatabase.allDocs({ keys: [id] })).rows[0] as any;
+        return Boolean(row?.value?.deleted);
+    }
+
+    private backendIdentity(): string {
+        const url = new URL(this.config.couchdbUrl);
+        url.username = "";
+        url.password = "";
+        url.hash = "";
+        return "couchdb:" + url.toString().replace(/\/$/, "") +
+            "/" + encodeURIComponent(this.config.database);
+    }
+
+    async readVersioned(path: string): Promise<BackendReadResult> {
+        try {
+            this.validatePath(path);
+            const entry = await this.manipulator.liveSyncLocalDB.getDBEntry(
+                path as FilePathWithPrefix,
+                { conflicts: true, deleted_conflicts: true } as any,
+                false,
+                true,
+                true,
+            ) as any;
+            if (!entry) return { status: "error", code: await this.tombstoneExists(path) ? "RESTORE_REQUIRED" : "NOTE_NOT_FOUND" };
+            if (entry.deleted || entry._deleted) return { status: "error", code: "RESTORE_REQUIRED" };
+            const conflicts = [...(entry._conflicts ?? []), ...(entry._deleted_conflicts ?? [])].sort();
+            const leaves = [
+                { revision: entry._rev, deleted: false },
+                ...(entry._conflicts ?? []).map((revision: string) => ({ revision, deleted: false })),
+                ...(entry._deleted_conflicts ?? []).map((revision: string) => ({ revision, deleted: true })),
+            ].sort((a, b) => a.revision.localeCompare(b.revision));
+            const bytes = new Uint8Array(await readAsBlob(entry).arrayBuffer());
+            const note: VersionedNote = {
+                path,
+                bytes,
+                version: encodeNoteVersion({
+                    backend: this.backendIdentity(),
+                    path,
+                    state: "exists",
+                    mutation: { winner: entry._rev, leaves },
+                }),
+                size: entry.size ?? bytes.byteLength,
+                ctime: entry.ctime ?? 0,
+                mtime: entry.mtime ?? 0,
+                conflicts,
+                concurrency: this.concurrency,
+                backendState: { winnerRevision: entry._rev },
+            };
+            return { status: "ok", note };
+        } catch (error: any) {
+            if (error.code === "INVALID_PATH") return { status: "error", code: "INVALID_PATH" };
+            if (error.status === 404 || error.name === "not_found") {
+                try { return { status: "error", code: await this.tombstoneExists(path) ? "RESTORE_REQUIRED" : "NOTE_NOT_FOUND" }; }
+                catch { return { status: "error", code: "BACKEND_UNAVAILABLE" }; }
+            }
+            return { status: "error", code: "BACKEND_UNAVAILABLE" };
         }
     }
 
     async readNote(path: string): Promise<string | null> {
-        this.validatePath(path);
-        const entry = await this.manipulator.get(path as FilePathWithPrefix);
-        if (!entry) return null;
-        if ("data" in entry && Array.isArray(entry.data)) {
-            return entry.data.join("");
+        const result = await this.readVersioned(path);
+        return result.status === "ok" ? new TextDecoder().decode(result.note.bytes) : null;
+    }
+
+    private isConflictError(error: any): boolean {
+        return error?.status === 409 || error?.name === "conflict";
+    }
+
+    private winnerRevision(note: VersionedNote): string {
+        return (note.backendState as { winnerRevision: string }).winnerRevision;
+    }
+
+    private async guardedPut(path: string, bytes: Uint8Array, ctime: number, expectedRevision?: string): Promise<BackendMutationResult> {
+        const effect = { kind: expectedRevision ? "note_updated" as const : "note_created" as const, path, completed: false };
+        try {
+            clearHandlers();
+            const committed = await this.manipulator.put(
+                path,
+                createBinaryBlob(Uint8Array.from(bytes)),
+                { ctime, mtime: Date.now(), size: bytes.byteLength },
+                "plain",
+                expectedRevision,
+                true,
+            );
+            if (!committed) return { status: "error", code: "BACKEND_UNAVAILABLE", effects: [effect] };
+            effect.completed = true;
+            const after = await this.readVersioned(path);
+            if (after.status !== "ok") return { status: "indeterminate", effects: [effect] };
+            if (after.note.conflicts.length > 0) return { status: "committed_with_conflict", note: after.note, effects: [effect] };
+            return { status: "ok", note: after.note, effects: [effect] };
+        } catch (error: any) {
+            if (this.isConflictError(error)) return { status: "conflict", code: expectedRevision ? "STALE_VERSION" : "DESTINATION_EXISTS", effects: [effect] };
+            if (!effect.completed) return { status: "indeterminate", effects: [effect] };
+            return { status: "indeterminate", effects: [effect] };
         }
-        return null;
+    }
+
+    async createVersioned(path: string, bytes: Uint8Array): Promise<BackendMutationResult> {
+        try { this.validatePath(path); } catch { return { status: "error", code: "INVALID_PATH", effects: [] }; }
+        const existing = await this.readVersioned(path);
+        if (existing.status === "ok") return { status: "conflict", code: "DESTINATION_EXISTS", effects: [] };
+        if (existing.code === "RESTORE_REQUIRED") return { status: "error", code: "RESTORE_REQUIRED", effects: [] };
+        if (existing.code !== "NOTE_NOT_FOUND") return { status: "error", code: existing.code, effects: [] };
+        return this.guardedPut(path, bytes, Date.now());
+    }
+
+    async replaceVersioned(path: string, expectedVersion: string, bytes: Uint8Array): Promise<BackendMutationResult> {
+        const current = await this.readVersioned(path);
+        if (current.status !== "ok") return { status: "error", code: current.code, effects: [] };
+        const effect = { kind: "note_updated" as const, path, completed: false };
+        if (current.note.conflicts.length > 0) return { status: "conflict", code: "PRE_EXISTING_CONFLICT", effects: [effect] };
+        if (current.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };
+        return this.guardedPut(path, bytes, current.note.ctime, this.winnerRevision(current.note));
+    }
+
+    async deleteVersioned(path: string, expectedVersion: string): Promise<BackendMutationResult> {
+        const current = await this.readVersioned(path);
+        const effect = { kind: "note_deleted" as const, path, completed: false };
+        if (current.status !== "ok") return { status: "error", code: current.code, effects: [effect] };
+        if (current.note.conflicts.length > 0) return { status: "conflict", code: "PRE_EXISTING_CONFLICT", effects: [effect] };
+        if (current.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };
+        try {
+            clearHandlers();
+            const response = await this.manipulator.liveSyncLocalDB.storeDeletionAtRevision(
+                path as FilePathWithPrefix,
+                this.winnerRevision(current.note),
+                true,
+            );
+            if (!response) return { status: "error", code: "BACKEND_UNAVAILABLE", effects: [effect] };
+            effect.completed = true;
+            try {
+                const id = await this.manipulator.path2id(path as FilePathWithPrefix);
+                const post = await this.manipulator.liveSyncLocalDB.getRaw(id, { conflicts: true, deleted_conflicts: true } as any) as any;
+                const branches = [...(post._conflicts ?? []), ...(post._deleted_conflicts ?? [])];
+                if (branches.length > 0) return { status: "committed_with_conflict", effects: [effect] };
+            } catch {}
+            return { status: "ok", effects: [effect] };
+        } catch (error: any) {
+            if (this.isConflictError(error)) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };
+            return { status: "indeterminate", effects: [effect] };
+        }
+    }
+
+    async moveVersioned(from: string, to: string, expectedVersion: string): Promise<BackendMutationResult> {
+        try { this.validatePath(from); this.validatePath(to); }
+        catch { return { status: "error", code: "INVALID_PATH", effects: [] }; }
+        const effects = [
+            { kind: "destination_created" as const, path: to, completed: false },
+            { kind: "source_deleted" as const, path: from, completed: false },
+        ];
+        const source = await this.readVersioned(from);
+        if (source.status !== "ok") return { status: "error", code: source.code, effects };
+        if (source.note.conflicts.length > 0) return { status: "conflict", code: "PRE_EXISTING_CONFLICT", effects };
+        if (source.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects };
+        const destination = await this.readVersioned(to);
+        if (destination.status === "ok") return { status: "conflict", code: "DESTINATION_EXISTS", effects };
+        if (destination.code === "RESTORE_REQUIRED") return { status: "error", code: "RESTORE_REQUIRED", effects };
+        if (destination.code !== "NOTE_NOT_FOUND") return { status: "error", code: destination.code, effects };
+        const created = await this.guardedPut(to, source.note.bytes, source.note.ctime);
+        effects[0].completed = created.effects.some((effect) => effect.completed);
+        if (created.status !== "ok" && created.status !== "committed_with_conflict") return { ...created, effects };
+        effects[0].completed = true;
+        const deleted = await this.deleteVersioned(from, expectedVersion);
+        if (deleted.status !== "ok" && deleted.status !== "committed_with_conflict") {
+            if (deleted.status === "indeterminate") return { status: "indeterminate", effects };
+            return { status: "partial", code: "code" in deleted ? deleted.code : "BACKEND_UNAVAILABLE", effects };
+        }
+        effects[1].completed = true;
+        if (created.status === "committed_with_conflict" || deleted.status === "committed_with_conflict") {
+            return { status: "committed_with_conflict", note: created.note, effects };
+        }
+        return { status: "ok", note: created.note, effects };
     }
 
     async writeNote(path: string, content: string): Promise<boolean> {

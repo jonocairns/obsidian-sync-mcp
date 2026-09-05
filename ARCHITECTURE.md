@@ -147,14 +147,17 @@ During a build or catch-up, every index-backed tool response (`search_notes`,
 Interface shared by both modes:
 
 ```typescript
-interface VaultBackend {
-    init(): Promise<void>;
-    close(): Promise<void>;
-    readNote(path: string): Promise<string | null>;
-    writeNote(path: string, content: string): Promise<boolean>;
-    deleteNote(path: string): Promise<boolean>;
-    moveNote(from: string, to: string): Promise<boolean>;
-    getMetadata(path: string): Promise<NoteInfo | null>;
+interface VersionedNoteBackend {
+    readonly concurrency: "best_effort" | "strict_winner_cas";
+    readVersioned(path: string): Promise<BackendReadResult>;
+    createVersioned(path: string, bytes: Uint8Array): Promise<BackendMutationResult>;
+    replaceVersioned(path: string, version: string, bytes: Uint8Array): Promise<BackendMutationResult>;
+    deleteVersioned(path: string, version: string): Promise<BackendMutationResult>;
+    moveVersioned(from: string, to: string, version: string): Promise<BackendMutationResult>;
+}
+
+interface VaultBackend extends VersionedNoteBackend {
+    // Collection/index maintenance surface:
     listNotes(folder?: string): Promise<string[]>;
     listNotesWithMtime(folder?: string): Promise<NoteListing[]>;
     watchChanges?(callback): void;          // live changes
@@ -163,13 +166,19 @@ interface VaultBackend {
 ```
 
 ### LocalVault (`src/vault-local.ts`)
-- `safePath()` resolves symlinks and blocks traversal
+- Version tokens bind the canonical path, backend root, coherent stat identity, and content digest
+- Exclusive creation and move destinations; atomic sibling-temp replacement
+- Process-local writer serialization with externally visible `best_effort` concurrency
+- `safePath()` resolves symlinks and blocks traversal, including absent targets
 - `listNotesWithMtime()` uses glob + stat in parallel
 - Filters `.obsidian/` directory
 
 ### CouchDB Vault (`src/vault.ts`)
 - `DirectFileManipulator` for all CouchDB operations
 - `validatePath()` blocks null bytes, `..`, absolute paths, length > 1000
+- Winning-revision compare-and-swap with ordinary PouchDB writes rather than forced conflict creation
+- Explicit tombstone and visible conflict-branch handling
+- Destination-first moves with exact effects and honest partial or indeterminate outcomes
 - `catchUp()` uses PouchDB `_changes` API directly (same selector as live watcher)
 - `watchChanges()` uses `beginWatch` for live `_changes` feed
 - Shared `docToChange()` and `mdFilter()` helpers for both catch-up and live watch
@@ -198,7 +207,7 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 | Tool | Reads from | Writes to |
 |---|---|---|
 | `read_note` | vault | — |
-| `write_note` | — | vault + index |
+| `create_note` | vault | vault + index |
 | `edit_note` | vault | vault + index |
 | `list_notes` | index (fallback: vault) | — |
 | `list_folders` | index (fallback: vault) | — |
@@ -206,7 +215,10 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 | `search_notes` | disk-backed FTS index | — |
 | `get_note_metadata` | vault + index (backlinks) | — |
 | `move_note` | vault | vault + index |
-| `delete_note` | — | vault + index |
+| `delete_note` | vault | vault + index |
+
+`write_note` is intentionally absent. The six single-note tools advertise a
+strict structured output contract; collection and search results remain unchanged.
 
 ## Build (`tsup.config.ts`)
 
