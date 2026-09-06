@@ -1,0 +1,20 @@
+name: pnpm store cache
+description: >-
+  Restore and save the pnpm content-addressable store, keyed on pnpm-lock.yaml,
+  so `pnpm install --frozen-lockfile` links packages from cache instead of
+  re-downloading them on every job. Requires the Nix dev shell (pnpm) to already
+  be available, so use it after nix-installer-action and before `pnpm install`.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve pnpm store dir
+      id: dir
+      shell: nix develop --command bash -e {0}
+      run: echo "dir=$(pnpm --silent store path)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.dir.outputs.dir }}
+        key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: |
+          pnpm-store-${{ runner.os }}-

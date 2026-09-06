@@ -2,14 +2,14 @@
  * Vault access layer — wraps DirectFileManipulator from livesync-commonlib.
  */
 
-import { DirectFileManipulator } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
-import type { DirectFileManipulatorOptions } from "../lib/livesync-commonlib/src/API/DirectFileManipulator.ts";
-import { createBinaryBlob, createTextBlob } from "../lib/livesync-commonlib/src/common/utils.ts";
-import { decodeBinary } from "../lib/livesync-commonlib/src/string_and_binary/convert.ts";
-import type { FilePathWithPrefix } from "../lib/livesync-commonlib/src/common/types.ts";
-import type { MetaEntry } from "../lib/livesync-commonlib/src/API/DirectFileManipulatorV2.ts";
+import { DirectFileManipulator } from "@lib/API/DirectFileManipulator";
+import type { DirectFileManipulatorOptions } from "@lib/API/DirectFileManipulator";
+import { createBinaryBlob, createTextBlob } from "@lib/common/utils";
+import { decodeBinary } from "@lib/string_and_binary/convert";
+import type { FilePathWithPrefix } from "@lib/common/types";
+import type { MetaEntry } from "@lib/API/DirectFileManipulatorV2";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
-import { clearHandlers } from "../lib/livesync-commonlib/src/replication/SyncParamsHandler.ts";
+import { clearHandlers } from "@lib/replication/SyncParamsHandler";
 import { parseFrontmatterAndLinks } from "./parse.js";
 import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, BackendReadResult, VersionedNote } from "./vault-backend.js";
 import { deriveContent } from "./index-sync.js";
@@ -105,13 +105,15 @@ export class Vault implements VaultBackend {
         let since: string | number = 0;
 
         while (ids.length < SAMPLE_TARGET) {
-            const result = await db.changes({
+            // db is the opaque livesync-commonlib boundary (see typecheck/shims.d.ts);
+            // type the changes-feed shape we actually consume here.
+            const result = (await db.changes({
                 since,
                 limit: BATCH_SIZE,
                 // Only real file entries — excludes chunks, versioninfo, milestones, sync params.
                 selector: { type: { $in: ["plain", "newnote"] } },
                 live: false,
-            });
+            })) as { results: Array<{ id: string }>; last_seq: string | number };
             for (const change of result.results) {
                 if (ids.length >= SAMPLE_TARGET) break;
                 ids.push(change.id);
@@ -197,7 +199,8 @@ export class Vault implements VaultBackend {
     watchChanges(callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void): void {
         // catchUp already set this.manipulator.since to the right point
         this.manipulator.beginWatch(
-            (doc, seq) => Vault.docToChange(doc, callback, seq),
+            // manipulator is an opaque boundary (see typecheck/shims.d.ts)
+            (doc: unknown, seq: string | number) => Vault.docToChange(doc, callback, seq),
             Vault.mdFilter,
         );
     }

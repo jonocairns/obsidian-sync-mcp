@@ -1,14 +1,20 @@
 {
     "compilerOptions": {
-        "target": "ES2022",
+        "target": "ES2024",
+        "lib": ["ES2024"],
         "module": "ES2022",
         "moduleResolution": "bundler",
         "esModuleInterop": true,
         "strict": true,
+        // The build is esbuild (tsup), which transpiles each file in isolation:
+        // enforce what that requires and keep import/export syntax verbatim.
+        "isolatedModules": true,
+        "verbatimModuleSyntax": true,
         "skipLibCheck": true,
         "resolveJsonModule": true,
-        "outDir": "dist",
-        "rootDir": ".",
+        // Never emits: the build is tsup (esbuild). This config is for
+        // type-checking and editor tooling only.
+        "noEmit": true,
         "paths": {
             "@lib/*": ["./lib/livesync-commonlib/src/*"],
             "@/*": ["./src/stubs/*"]
