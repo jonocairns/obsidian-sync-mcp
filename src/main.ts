@@ -20,18 +20,15 @@ import { ensureDataDirWritable } from "./data-dir.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
 import { resolveMcpStatelessSetting } from "./transport.js";
+import { schemaVersion } from "./note-contract.js";
 import { parseWriteFolders } from "./write-scope.js";
 
 // Suppress livesync-commonlib logs that expose vault file paths in production.
 // Set LOG_LEVEL=debug to see all library logs during development.
 const debugLogging = process.env.LOG_LEVEL === "debug";
-setGlobalLogFunction((message, level = LEVEL_INFO) => {
+setGlobalLogFunction((_message, level = LEVEL_INFO) => {
     if (level < LEVEL_INFO) return;
-    if (!debugLogging && typeof message === "string") {
-        if (/^(GET|PUT|DELETE|WATCH|FOLLOW|Sensible merge|Object merge):/.test(message)) return;
-        if (message.includes("replicator") || message.includes("Replicator") || message.includes("ReplicatorService")) return;
-    }
-    console.log(message);
+    if (debugLogging) console.log("[livesync] internal event (details redacted)");
 });
 
 // --- Configuration from environment ---
@@ -74,8 +71,8 @@ if (MCP_INSTRUCTIONS_FILE) {
             throw new Error(`file is ${size} bytes, exceeds ${MCP_INSTRUCTIONS_MAX_BYTES} byte cap`);
         }
         MCP_EXTRA_INSTRUCTIONS = readFileSync(MCP_INSTRUCTIONS_FILE, "utf8").trim() || undefined;
-    } catch (err) {
-        console.error(`Failed to read MCP_INSTRUCTIONS_FILE (${MCP_INSTRUCTIONS_FILE}): ${(err as Error).message}`);
+    } catch {
+        console.error("Failed to read MCP_INSTRUCTIONS_FILE (path and details redacted).");
         process.exit(1);
     }
     if (MCP_INSTRUCTIONS_ENV) {
@@ -93,7 +90,7 @@ let vault: VaultBackend;
 if (VAULT_PATH) {
     const { LocalVault } = await import("./vault-local.js");
     vault = new LocalVault(VAULT_PATH);
-    console.log(`Local mode: ${VAULT_PATH}`);
+    console.log("Local vault mode enabled.");
 } else if (COUCHDB_URL) {
     if (!COUCHDB_PASSWORD) {
         console.error("COUCHDB_PASSWORD is required in remote mode.");
@@ -108,7 +105,7 @@ if (VAULT_PATH) {
         passphrase: COUCHDB_PASSPHRASE,
         obfuscatePaths: COUCHDB_OBFUSCATE_PROPERTIES,
     });
-    console.log(`Remote mode: ${COUCHDB_URL}`);
+    console.log("Remote CouchDB mode enabled.");
 } else {
     console.error("Set VAULT_PATH for local mode or COUCHDB_URL for remote mode.");
     process.exit(1);
@@ -216,7 +213,7 @@ async function rebuildIndex() {
         };
 
         let since = searchIndex.since || "0";
-        if (debugLogging) console.log(`[debug] CouchDB catch-up from since: ${since}`);
+        if (debugLogging) console.log("[debug] CouchDB catch-up started (sequence redacted)");
         let changes = 0;
         const catchUpBatched = async (
             from: string,
@@ -243,13 +240,13 @@ async function rebuildIndex() {
         try {
             const countingCallback = (path: string, content: string | null, mtime?: number) => {
                 changes++;
-                if (debugLogging) console.log(`[debug] Change: ${path} ${content !== null ? "(update)" : "(delete)"}`);
+                if (debugLogging) console.log(`[debug] CouchDB note ${content !== null ? "updated" : "deleted"} (path redacted)`);
                 changeCallback(path, content, mtime);
             };
             const newSince = await catchUpBatched(since, countingCallback);
             searchIndex.since = newSince;
-        } catch (err) {
-            console.warn(`Catch-up failed (${err}), rebuilding index from scratch...`);
+        } catch {
+            console.warn("Catch-up failed (details redacted), rebuilding index from scratch...");
             searchIndex.clear();
             changes = 0;
             const newSince = await catchUpBatched("0", (path, content, mtime) => {
@@ -309,7 +306,7 @@ async function rebuildIndex() {
 const rebuildPromise = rebuildIndex();
 void rebuildPromise.catch((err) => {
     searchIndex.setBuildStatus("error", searchIndex.status.processed, searchIndex.status.total, String(err));
-    console.error("Index rebuild failed:", err);
+    console.error("Index rebuild failed (details redacted).");
 });
 
 // --- Watch for external changes ---
@@ -349,28 +346,28 @@ if (VAULT_PATH) {
     // not lost and cannot advance the checkpoint out of order.
     void startAfterSuccessfulRebuild(rebuildPromise, () => {
         vault.watchChanges!((path: string, content: string | null, mtime?: number, seq?: string | number) => {
-            if (debugLogging) console.log(`[debug] CouchDB ${content === null ? "delete" : "change"}: ${path}`);
+            if (debugLogging) console.log(`[debug] CouchDB note ${content === null ? "deleted" : "changed"} (path redacted)`);
             searchIndex.beginBatch();
             try {
                 applyIndexChange(searchIndex, path, content, mtime);
                 if (seq) searchIndex.since = String(seq);
                 searchIndex.commitBatch();
-            } catch (error) {
+            } catch {
                 searchIndex.rollbackBatch();
-                throw error;
+                throw new Error("Search index update failed.");
             }
         });
         console.log("Watching CouchDB for LiveSync changes.");
-    }).catch((error) => {
-        console.error("Failed to start CouchDB change watcher:", error);
+    }).catch(() => {
+        console.error("Failed to start CouchDB change watcher (details redacted).");
     });
 }
 
 // --- MCP Server ---
-const BASE_INSTRUCTIONS = "Access and manage an Obsidian vault. You can read, write, list, search, move, and delete markdown notes. Every tool response includes an Obsidian deep link. Always show this link to the user using the format [obsidian://open?vault=...&file=...](obsidian://open?vault=...&file=...) so it is both clickable and visible as a URL.";
+const BASE_INSTRUCTIONS = "Access and manage Markdown notes in an Obsidian vault. Single-note reads return canonical Markdown and an authoritative opaque version. Use a fresh read_note or get_note_metadata version before edit, delete, or move. Only note-identifying success responses include a separate Obsidian deep link.";
 const serverOptions: ConstructorParameters<typeof FastMCP>[0] = {
     name: "obsidian-sync-mcp",
-    version: process.env.npm_package_version ?? "0.0.0",
+    version: (process.env.npm_package_version ?? schemaVersion) as `${number}.${number}.${number}`,
     instructions: MCP_EXTRA_INSTRUCTIONS ? `${BASE_INSTRUCTIONS}\n\n${MCP_EXTRA_INSTRUCTIONS}` : BASE_INSTRUCTIONS,
 };
 
@@ -465,11 +462,11 @@ await server.start({
     },
 });
 console.log(
-    `obsidian-sync-mcp v${process.env.npm_package_version ?? "unknown"} listening on port ${PORT} ` +
+    `obsidian-sync-mcp v${process.env.npm_package_version ?? schemaVersion} listening on port ${PORT} ` +
     `(Streamable HTTP, ${MCP_STATELESS ? "stateless" : "sessionful"})`,
 );
 
 // Prevent unhandled rejections from crashing the server (e.g. decryption failures in watcher)
-process.on("unhandledRejection", (err) => {
-    console.error("Unhandled rejection:", err);
+process.on("unhandledRejection", () => {
+    console.error("Unhandled rejection (details redacted).");
 });

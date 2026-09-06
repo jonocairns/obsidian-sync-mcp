@@ -3,15 +3,15 @@
   "name": "io.github.es617/obsidian-sync-mcp",
   "description": "Give AI agents access to your Obsidian vault via local files or Self-hosted LiveSync.",
   "repository": {
-    "url": "https://github.com/es617/obsidian-sync-mcp.git",
+    "url": "https://github.com/jonocairns/obsidian-sync-mcp.git",
     "source": "github"
   },
-  "version": "0.6.3",
+  "version": "0.9.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "obsidian-sync-mcp",
-      "version": "0.6.3",
+      "version": "0.9.0",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:8787/mcp"
@@ -102,7 +102,7 @@
           "name": "PORT"
         },
         {
-          "description": "Set to 'true' to disable all write tools (write_note, edit_note, delete_note, move_note). Useful when exposing the server to multiple AI clients.",
+          "description": "Set to 'true' to disable all write tools (create_note, edit_note, delete_note, move_note). Useful when exposing the server to multiple AI clients.",
           "isRequired": false,
           "format": "string",
           "isSecret": false,

@@ -1,0 +1,367 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import type { FastMCP } from "fastmcp";
+import { registerTools } from "./tools.js";
+import { SearchIndex } from "./search.js";
+import type {
+    BackendMutationResult,
+    BackendReadResult,
+    VaultBackend,
+    VersionedNote,
+} from "./vault-backend.js";
+import { structuredNoteResultSchema } from "./note-contract.js";
+
+const encoder = new TextEncoder();
+const note: VersionedNote = {
+    path: "note.md",
+    bytes: encoder.encode("body"),
+    version: "nv1.test",
+    size: 4,
+    ctime: 1,
+    mtime: 2,
+    conflicts: [],
+    concurrency: "strict_winner_cas",
+    backendState: { winnerRevision: "1-a" },
+};
+
+function backend(mutation: BackendMutationResult, read: BackendReadResult = { status: "ok", note }): VaultBackend {
+    return {
+        concurrency: "strict_winner_cas",
+        init: async () => {},
+        close: async () => {},
+        readVersioned: async () => read,
+        createVersioned: async () => mutation,
+        replaceVersioned: async () => mutation,
+        deleteVersioned: async () => mutation,
+        moveVersioned: async () => mutation,
+        readNote: async () => "body",
+        writeNote: async () => true,
+        deleteNote: async () => true,
+        moveNote: async () => true,
+        getMetadata: async () => null,
+        listNotes: async () => [],
+        listNotesWithMtime: async () => [],
+    };
+}
+
+function toolsFor(vault: VaultBackend, index = new SearchIndex()) {
+    const tools = new Map<string, any>();
+    const server = {
+        addTool(tool: any) {
+            tools.set(tool.name, tool);
+            return tool;
+        },
+    };
+    registerTools(server as unknown as FastMCP, vault, index, "TestVault");
+    return tools;
+}
+
+async function call(tools: Map<string, any>, name: string, args: Record<string, unknown>) {
+    const value = await tools.get(name).execute(args, {});
+    assert.equal(structuredNoteResultSchema.safeParse(value.structuredContent).success, true);
+    assert.equal(value.content.length, 1);
+    assert.equal(value.content[0].type, "text");
+    return value;
+}
+
+describe("structured mutation outcomes", () => {
+    for (const operation of ["create_note", "edit_note"] as const) {
+        it(`indexes ${operation} from authoritative backend bytes and timestamp`, async () => {
+            const index = new SearchIndex();
+            let indexed: { path: string; content: string; mtime?: number } | undefined;
+            index.update = (path, content, mtime) => { indexed = { path, content, mtime }; };
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note: { ...note, bytes: encoder.encode("authoritative"), mtime: 123 },
+                    effects: [{
+                        kind: operation === "create_note" ? "note_created" : "note_updated",
+                        path: "note.md",
+                        completed: true,
+                    }],
+                }), index),
+                operation,
+                operation === "create_note"
+                    ? { path: "note.md", content: "requested" }
+                    : { path: "note.md", version: note.version, content: "requested", operation: "replace_all" },
+            );
+            assert.equal(result.structuredContent.status, "ok");
+            assert.deepEqual(indexed, { path: "note.md", content: "authoritative", mtime: 123 });
+        });
+    }
+
+    for (const backendNote of [undefined, { ...note, bytes: Uint8Array.from([0xff]) }]) {
+        it(`marks committed content stale when the authoritative snapshot is ${backendNote ? "invalid Markdown" : "missing"}`, async () => {
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note: backendNote,
+                    effects: [{ kind: "note_created", path: "note.md", completed: true }],
+                })),
+                "create_note",
+                { path: "note.md", content: "requested" },
+            );
+            assert.equal(result.structuredContent.status, "ok");
+            assert.equal(result.structuredContent.result.indexFreshness, "stale");
+            assert.deepEqual(result.structuredContent.effects.at(-1), {
+                kind: "index_updated",
+                path: "note.md",
+                completed: false,
+            });
+        });
+    }
+
+    for (const state of ["ready", "building", "catching_up", "error"] as const) {
+        it(`keeps mutation freshness monotonic from ${state}`, async () => {
+            const index = new SearchIndex();
+            index.setBuildStatus(state);
+            const result = await call(
+                toolsFor(backend({
+                    status: "ok",
+                    note,
+                    effects: [{ kind: "note_created", path: "note.md", completed: true }],
+                }), index),
+                "create_note",
+                { path: "note.md", content: "requested" },
+            );
+            assert.equal(result.structuredContent.result.indexFreshness, state === "ready" ? "current" : "stale");
+            assert.equal(result.structuredContent.effects.at(-1).completed, true);
+        });
+    }
+
+    it("marks freshness stale if the index stops being ready during maintenance", async () => {
+        const index = new SearchIndex();
+        const update = index.update.bind(index);
+        index.update = (path, content, mtime) => {
+            update(path, content, mtime);
+            index.setBuildStatus("catching_up");
+        };
+        const result = await call(
+            toolsFor(backend({
+                status: "ok",
+                note,
+                effects: [{ kind: "note_created", path: "note.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "note.md", content: "requested" },
+        );
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+    });
+
+    it("keeps a committed vault mutation successful when index maintenance fails", async () => {
+        const index = new SearchIndex();
+        index.update = () => { throw new Error("index unavailable"); };
+        const result = await call(
+            toolsFor(backend({
+                status: "ok",
+                note: { ...note, version: "nv1.after" },
+                effects: [{ kind: "note_created", path: "note.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "note.md", content: "body" },
+        );
+        assert.equal(result.structuredContent.status, "ok");
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        });
+        assert.match(result.content[0].text, /index is not proven current/i);
+    });
+
+    it("keeps global freshness stale after a failed maintenance call", async () => {
+        const index = new SearchIndex();
+        const update = index.update.bind(index);
+        index.update = () => { throw new Error("index unavailable"); };
+        const failed = await call(
+            toolsFor(backend({
+                status: "ok",
+                note,
+                effects: [{ kind: "note_created", path: "first.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "first.md", content: "body" },
+        );
+        assert.equal(failed.structuredContent.result.indexFreshness, "stale");
+        assert.equal(index.status.state, "error");
+
+        index.update = update;
+        const later = await call(
+            toolsFor(backend({
+                status: "ok",
+                note: { ...note, path: "second.md" },
+                effects: [{ kind: "note_created", path: "second.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "second.md", content: "body" },
+        );
+        assert.equal(later.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["second.md"]);
+    });
+
+    it("maps a post-commit CouchDB branch to committed_with_conflict", async () => {
+        const result = await call(
+            toolsFor(backend({
+                status: "committed_with_conflict",
+                note: { ...note, conflicts: ["2-other"] },
+                effects: [{ kind: "note_created", path: "note.md", completed: true }],
+            })),
+            "create_note",
+            { path: "note.md", content: "body" },
+        );
+        assert.equal(result.structuredContent.status, "committed_with_conflict");
+        assert.equal(result.isError, false);
+        assert.equal(result.structuredContent.recovery.strategy, "manual_reconcile");
+    });
+
+    it("does not remove an indexed note when a committed delete has a concurrent branch", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "authoritative winner", 2);
+        const result = await call(
+            toolsFor(backend({
+                status: "committed_with_conflict",
+                effects: [{ kind: "note_deleted", path: "note.md", completed: true }],
+            }), index),
+            "delete_note",
+            { path: "note.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "committed_with_conflict");
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["note.md"]);
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        });
+        assert.equal(index.status.state, "error");
+        assert.match(result.content[0].text, /index is not proven current/i);
+    });
+
+    it("does not project an indeterminate delete as authoritative absence", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "last known content", 1);
+        const result = await call(
+            toolsFor(backend({
+                status: "indeterminate",
+                effects: [{ kind: "note_deleted", path: "note.md", completed: true }],
+            }), index),
+            "delete_note",
+            { path: "note.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "indeterminate");
+        assert.deepEqual(index.listPaths(), ["note.md"]);
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        });
+        assert.equal(index.status.state, "error");
+    });
+
+    it("preserves exact move effects for a partial result", async () => {
+        const effects = [
+            { kind: "destination_created" as const, path: "moved.md", completed: true },
+            { kind: "source_deleted" as const, path: "note.md", completed: false },
+        ];
+        const result = await call(
+            toolsFor(backend({ status: "partial", code: "STALE_VERSION", effects })),
+            "move_note",
+            { from: "note.md", to: "moved.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "partial");
+        assert.equal(result.isError, true);
+        assert.deepEqual(result.structuredContent.effects.slice(0, 2), effects);
+        assert.equal(result.structuredContent.recovery.strategy, "read_then_retry");
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "moved.md",
+            completed: false,
+        });
+    });
+
+    it("indexes a committed move from the backend result even when a pre-move read would fail", async () => {
+        const index = new SearchIndex();
+        let indexed: { path: string; content: string } | undefined;
+        index.update = (path, content) => { indexed = { path, content }; };
+        const result = await call(
+            toolsFor(backend({
+                status: "ok",
+                note: { ...note, path: "moved.md", bytes: encoder.encode("committed body") },
+                effects: [
+                    { kind: "destination_created", path: "moved.md", completed: true },
+                    { kind: "source_deleted", path: "note.md", completed: true },
+                ],
+            }, { status: "error", code: "BACKEND_UNAVAILABLE" }), index),
+            "move_note",
+            { from: "note.md", to: "moved.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "ok");
+        assert.deepEqual(indexed, { path: "moved.md", content: "committed body" });
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "moved.md",
+            completed: true,
+        });
+    });
+
+    it("does not remove a move source when a conflict leaves source absence unproven", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "source", 1);
+        const result = await call(
+            toolsFor(backend({
+                status: "committed_with_conflict",
+                note: { ...note, path: "moved.md", bytes: encoder.encode("destination") },
+                effects: [
+                    { kind: "destination_created", path: "moved.md", completed: true },
+                    { kind: "source_deleted", path: "note.md", completed: true },
+                ],
+            }), index),
+            "move_note",
+            { from: "note.md", to: "moved.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["moved.md", "note.md"]);
+        assert.deepEqual(result.structuredContent.effects.slice(-2), [{
+            kind: "index_updated",
+            path: "moved.md",
+            completed: true,
+        }, {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        }]);
+        assert.equal(index.status.state, "error");
+        assert.match(result.content[0].text, /index is not proven current/i);
+    });
+
+    it("marks unknown commit state indeterminate and warns against blind retry", async () => {
+        const result = await call(
+            toolsFor(backend({
+                status: "indeterminate",
+                effects: [{ kind: "note_created", path: "note.md", completed: false }],
+            })),
+            "create_note",
+            { path: "note.md", content: "body" },
+        );
+        assert.equal(result.structuredContent.status, "indeterminate");
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent.recovery.strategy, "read_then_retry");
+        assert.match(result.structuredContent.warning, /Do not repeat/i);
+    });
+
+    it("maps stale versions to a conflict without leaking a replacement version", async () => {
+        const result = await call(
+            toolsFor(backend({
+                status: "conflict",
+                code: "STALE_VERSION",
+                effects: [{ kind: "note_deleted", path: "note.md", completed: false }],
+            })),
+            "delete_note",
+            { path: "note.md", version: "nv1.stale" },
+        );
+        assert.equal(result.structuredContent.status, "conflict");
+        assert.equal(result.structuredContent.error.code, "STALE_VERSION");
+        assert.equal("result" in result.structuredContent, false);
+    });
+});

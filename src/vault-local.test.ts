@@ -175,80 +175,6 @@ describe("listNotes", () => {
     });
 });
 
-describe("edit_note operations (string manipulation)", () => {
-    // These test the same logic as the edit_note tool: read, transform, write back
-
-    it("append adds content to end", async () => {
-        await vault.writeNote("edit/append.md", "line one");
-        const existing = (await vault.readNote("edit/append.md"))!;
-        const updated = existing + "\nline two";
-        await vault.writeNote("edit/append.md", updated);
-        assert.equal(await vault.readNote("edit/append.md"), "line one\nline two");
-    });
-
-    it("append adds newline if missing", async () => {
-        await vault.writeNote("edit/append-nl.md", "line one\n");
-        const existing = (await vault.readNote("edit/append-nl.md"))!;
-        const updated = existing.endsWith("\n") ? existing + "line two" : existing + "\nline two";
-        await vault.writeNote("edit/append-nl.md", updated);
-        assert.equal(await vault.readNote("edit/append-nl.md"), "line one\nline two");
-    });
-
-    it("prepend inserts after frontmatter", async () => {
-        const original = "---\ntitle: Test\n---\nBody here";
-        await vault.writeNote("edit/prepend.md", original);
-        const existing = (await vault.readNote("edit/prepend.md"))!;
-        const fmMatch = existing.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
-        let updated: string;
-        if (fmMatch) {
-            const afterFm = fmMatch[0].length;
-            updated = existing.slice(0, afterFm) + "New top line\n" + existing.slice(afterFm);
-        } else {
-            updated = "New top line\n" + existing;
-        }
-        await vault.writeNote("edit/prepend.md", updated);
-        assert.equal(await vault.readNote("edit/prepend.md"), "---\ntitle: Test\n---\nNew top line\nBody here");
-    });
-
-    it("prepend goes to top when no frontmatter", async () => {
-        await vault.writeNote("edit/prepend-nofm.md", "Body here");
-        const existing = (await vault.readNote("edit/prepend-nofm.md"))!;
-        const fmMatch = existing.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/);
-        const updated = fmMatch
-            ? existing.slice(0, fmMatch[0].length) + "New top\n" + existing.slice(fmMatch[0].length)
-            : "New top\n" + existing;
-        await vault.writeNote("edit/prepend-nofm.md", updated);
-        assert.equal(await vault.readNote("edit/prepend-nofm.md"), "New top\nBody here");
-    });
-
-    it("replace swaps exact match", async () => {
-        await vault.writeNote("edit/replace.md", "Hello world, hello universe");
-        const existing = (await vault.readNote("edit/replace.md"))!;
-        const oldText = "world";
-        const idx = existing.indexOf(oldText);
-        assert.notEqual(idx, -1);
-        const updated = existing.slice(0, idx) + "earth" + existing.slice(idx + oldText.length);
-        await vault.writeNote("edit/replace.md", updated);
-        assert.equal(await vault.readNote("edit/replace.md"), "Hello earth, hello universe");
-    });
-
-    it("replace fails if old_text not found", async () => {
-        await vault.writeNote("edit/replace-miss.md", "Some content");
-        const existing = (await vault.readNote("edit/replace-miss.md"))!;
-        const idx = existing.indexOf("nonexistent");
-        assert.equal(idx, -1);
-    });
-
-    it("replace detects multiple matches", async () => {
-        await vault.writeNote("edit/replace-multi.md", "foo bar foo baz");
-        const existing = (await vault.readNote("edit/replace-multi.md"))!;
-        const oldText = "foo";
-        const idx = existing.indexOf(oldText);
-        const secondIdx = existing.indexOf(oldText, idx + 1);
-        assert.notEqual(secondIdx, -1, "should find multiple matches");
-    });
-});
-
 function createWatcher(dir: string, index: SearchIndex) {
     return watch(dir, { recursive: true }, async (_event, filename) => {
         if (!filename || !filename.endsWith(".md")) return;
@@ -262,7 +188,42 @@ function createWatcher(dir: string, index: SearchIndex) {
     });
 }
 
-describe("file watcher integration", () => {
+async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
+    const deadline = Date.now() + 3_000;
+    while (!predicate()) {
+        if (Date.now() >= deadline) assert.fail(message);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+}
+
+async function supportsRecursiveWatchEvents(): Promise<boolean> {
+    const directory = await mkdtemp(join(tmpdir(), "watch-capability-"));
+    let watcher: ReturnType<typeof watch> | undefined;
+    try {
+        return await new Promise<boolean>((resolve) => {
+            let settled = false;
+            let timer: ReturnType<typeof setTimeout>;
+            const finish = (supported: boolean) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(supported);
+            };
+            watcher = watch(directory, { recursive: true }, () => finish(true));
+            timer = setTimeout(() => finish(false), 500);
+            void writeFile(join(directory, "probe.md"), "probe").catch(() => finish(false));
+        });
+    } catch {
+        return false;
+    } finally {
+        watcher?.close();
+        await rm(directory, { recursive: true, force: true });
+    }
+}
+
+const recursiveWatchEventsSupported = await supportsRecursiveWatchEvents();
+
+describe("file watcher integration", { skip: !recursiveWatchEventsSupported }, () => {
     it("detects new file and updates search index", async () => {
         const watchDir = await mkdtemp(join(tmpdir(), "watch-test-"));
         const searchIndex = new SearchIndex();
@@ -270,13 +231,10 @@ describe("file watcher integration", () => {
 
         try {
             await writeFile(join(watchDir, "external.md"), "external edit keyword banana");
-            await new Promise((r) => setTimeout(r, 500));
-
-            const paths = searchIndex.listPaths();
-            assert.ok(paths.includes("external.md"), "should index external.md");
+            await waitUntil(() => searchIndex.listPaths().includes("external.md"), "should index external.md");
 
             await unlink(join(watchDir, "external.md"));
-            await new Promise((r) => setTimeout(r, 500));
+            await waitUntil(() => !searchIndex.listPaths().includes("external.md"), "should remove deleted file");
 
             assert.ok(!searchIndex.listPaths().includes("external.md"), "should remove deleted file");
         } finally {
@@ -308,10 +266,7 @@ describe("file watcher integration", () => {
         try {
             await mkdir(join(watchDir, "sub", "dir"), { recursive: true });
             await writeFile(join(watchDir, "sub", "dir", "deep.md"), "deep nested content mango");
-            await new Promise((r) => setTimeout(r, 500));
-
-            const paths = searchIndex.listPaths();
-            assert.ok(paths.some((p) => p.includes("deep.md")), "should index deep nested file");
+            await waitUntil(() => searchIndex.listPaths().some((p) => p.includes("deep.md")), "should index deep nested file");
         } finally {
             watcher.close();
             await rm(watchDir, { recursive: true, force: true });
