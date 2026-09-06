@@ -1,18 +1,9 @@
 import { defineConfig } from "tsup";
 import path from "path";
-import { readFileSync, existsSync } from "fs";
+import { readFileSync } from "fs";
 import type { Plugin } from "esbuild";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf-8"));
-
-function resolveWithExtensions(base: string, rel: string): string | null {
-    const full = path.join(base, rel);
-    // Try exact, then .ts, then /index.ts
-    for (const candidate of [full, full + ".ts", path.join(full, "index.ts")]) {
-        if (existsSync(candidate)) return candidate;
-    }
-    return null;
-}
 
 const livesyncAliases: Plugin = {
     name: "livesync-aliases",
@@ -35,19 +26,8 @@ const livesyncAliases: Plugin = {
             return { path: path.join(stubs, "svelte.ts") };
         });
 
-        // Resolve @lib/ paths (livesync-commonlib source)
-        build.onResolve({ filter: /^@lib\// }, (args) => {
-            const rel = args.path.replace(/^@lib\//, "");
-            const resolved = resolveWithExtensions(libSrc, rel);
-            if (resolved) return { path: resolved };
-        });
-
-        // Resolve @/ paths to stubs
-        build.onResolve({ filter: /^@\// }, (args) => {
-            const rel = args.path.replace(/^@\//, "");
-            const resolved = resolveWithExtensions(stubs, rel);
-            if (resolved) return { path: resolved };
-        });
+        // The @lib/* and @/* aliases are resolved natively from tsconfig
+        // `paths` (esbuild reads them), so they need no handler here.
     },
 };
 

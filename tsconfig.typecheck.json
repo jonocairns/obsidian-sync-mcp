@@ -1,0 +1,15 @@
+{
+    // Type-check-only config: `tsc --noEmit` over our own src/. The runtime build
+    // is tsup/esbuild (see tsup.config.ts); this never emits. The vendored
+    // livesync-commonlib submodule is treated as an opaque boundary via
+    // typecheck/shims.d.ts, so only our code is checked under the strict base.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "allowImportingTsExtensions": true,
+        "paths": {
+            "@/*": ["./src/stubs/*"]
+        }
+    },
+    "include": ["src/**/*", "typecheck/**/*.d.ts"]
+}
