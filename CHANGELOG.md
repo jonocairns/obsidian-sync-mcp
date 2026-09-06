@@ -32,6 +32,22 @@
 - Enforce each dynamically registered OAuth client's declared token-endpoint authentication method for both authorization-code exchange and refresh. Confidential `client_secret_post` clients must now present their issued secret, public clients continue to use PKCE plus refresh-token rotation, and codes and refresh tokens are rejected when presented by a different client.
 - Reject authorization-code exchange until the corresponding password approval succeeds. Codes embedded in the approval form were previously exchangeable by their registered client before the user entered `MCP_AUTH_TOKEN`. Existing OAuth sessions are invalidated once on upgrade because persisted tokens cannot prove that they passed approval; client registrations are retained, so agents can reauthorize without being re-added.
 
+## [0.9.0](https://github.com/jonocairns/obsidian-sync-mcp/compare/v0.8.2...v0.9.0) (2026-09-06)
+
+
+### Features
+
+* add versioned structured note core ([ea8e66b](https://github.com/jonocairns/obsidian-sync-mcp/commit/ea8e66bce5f292345738fe51ad017834f3a16128))
+* add versioned structured note core ([b47b7dc](https://github.com/jonocairns/obsidian-sync-mcp/commit/b47b7dc49a210b82858c441d8c2356fc5bc05b82))
+
+
+### Bug Fixes
+
+* address structured core review findings ([d4dff40](https://github.com/jonocairns/obsidian-sync-mcp/commit/d4dff404b13797b7abb265b5be25e67bfb9f4c34))
+* **ci:** isolate package artifact smoke test ([bee6e5c](https://github.com/jonocairns/obsidian-sync-mcp/commit/bee6e5c7de7bfa1c4b079b289934ea0fabef112f))
+* preserve index truth across uncertain mutations ([7bae4b6](https://github.com/jonocairns/obsidian-sync-mcp/commit/7bae4b68f61189df1c481274b2d4789e8327488c))
+* preserve mutation outcome truthfulness ([90c82cc](https://github.com/jonocairns/obsidian-sync-mcp/commit/90c82cc9a1183ce0e40c58053a1fca610548219b))
+
 ## [0.8.2](https://github.com/jonocairns/obsidian-sync-mcp/compare/v0.8.1...v0.8.2) (2026-09-04)
 
 
