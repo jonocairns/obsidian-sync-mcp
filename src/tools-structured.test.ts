@@ -170,6 +170,36 @@ describe("structured mutation outcomes", () => {
         assert.match(result.content[0].text, /index is not proven current/i);
     });
 
+    it("keeps global freshness stale after a failed maintenance call", async () => {
+        const index = new SearchIndex();
+        const update = index.update.bind(index);
+        index.update = () => { throw new Error("index unavailable"); };
+        const failed = await call(
+            toolsFor(backend({
+                status: "ok",
+                note,
+                effects: [{ kind: "note_created", path: "first.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "first.md", content: "body" },
+        );
+        assert.equal(failed.structuredContent.result.indexFreshness, "stale");
+        assert.equal(index.status.state, "error");
+
+        index.update = update;
+        const later = await call(
+            toolsFor(backend({
+                status: "ok",
+                note: { ...note, path: "second.md" },
+                effects: [{ kind: "note_created", path: "second.md", completed: true }],
+            }), index),
+            "create_note",
+            { path: "second.md", content: "body" },
+        );
+        assert.equal(later.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["second.md"]);
+    });
+
     it("maps a post-commit CouchDB branch to committed_with_conflict", async () => {
         const result = await call(
             toolsFor(backend({
@@ -183,6 +213,50 @@ describe("structured mutation outcomes", () => {
         assert.equal(result.structuredContent.status, "committed_with_conflict");
         assert.equal(result.isError, false);
         assert.equal(result.structuredContent.recovery.strategy, "manual_reconcile");
+    });
+
+    it("does not remove an indexed note when a committed delete has a concurrent branch", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "authoritative winner", 2);
+        const result = await call(
+            toolsFor(backend({
+                status: "committed_with_conflict",
+                effects: [{ kind: "note_deleted", path: "note.md", completed: true }],
+            }), index),
+            "delete_note",
+            { path: "note.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "committed_with_conflict");
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["note.md"]);
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        });
+        assert.equal(index.status.state, "error");
+        assert.match(result.content[0].text, /index is not proven current/i);
+    });
+
+    it("does not project an indeterminate delete as authoritative absence", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "last known content", 1);
+        const result = await call(
+            toolsFor(backend({
+                status: "indeterminate",
+                effects: [{ kind: "note_deleted", path: "note.md", completed: true }],
+            }), index),
+            "delete_note",
+            { path: "note.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.status, "indeterminate");
+        assert.deepEqual(index.listPaths(), ["note.md"]);
+        assert.deepEqual(result.structuredContent.effects.at(-1), {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        });
+        assert.equal(index.status.state, "error");
     });
 
     it("preserves exact move effects for a partial result", async () => {
@@ -229,6 +303,36 @@ describe("structured mutation outcomes", () => {
             path: "moved.md",
             completed: true,
         });
+    });
+
+    it("does not remove a move source when a conflict leaves source absence unproven", async () => {
+        const index = new SearchIndex();
+        index.update("note.md", "source", 1);
+        const result = await call(
+            toolsFor(backend({
+                status: "committed_with_conflict",
+                note: { ...note, path: "moved.md", bytes: encoder.encode("destination") },
+                effects: [
+                    { kind: "destination_created", path: "moved.md", completed: true },
+                    { kind: "source_deleted", path: "note.md", completed: true },
+                ],
+            }), index),
+            "move_note",
+            { from: "note.md", to: "moved.md", version: note.version },
+        );
+        assert.equal(result.structuredContent.result.indexFreshness, "stale");
+        assert.deepEqual(index.listPaths(), ["moved.md", "note.md"]);
+        assert.deepEqual(result.structuredContent.effects.slice(-2), [{
+            kind: "index_updated",
+            path: "moved.md",
+            completed: true,
+        }, {
+            kind: "index_updated",
+            path: "note.md",
+            completed: false,
+        }]);
+        assert.equal(index.status.state, "error");
+        assert.match(result.content[0].text, /index is not proven current/i);
     });
 
     it("marks unknown commit state indeterminate and warns against blind retry", async () => {

@@ -108,16 +108,27 @@ export function registerTools(
         const effects = effectsOf(backend.effects);
         const indexWasReady = searchIndex.status.state === "ready";
         let maintenanceSucceeded = true;
+        let maintenanceFailurePath = destinationPath ?? path;
         if (backend.effects.some((effect) => effect.completed)) {
             try {
                 if (operation === "delete" && backend.effects.some((effect) => effect.kind === "note_deleted" && effect.completed)) {
+                    if (backend.status !== "ok") throw new Error("Authoritative note absence unavailable for indexing");
                     searchIndex.remove(path);
                 } else if (operation === "move") {
-                    if (backend.effects.some((effect) => effect.kind === "source_deleted" && effect.completed)) searchIndex.remove(path);
                     const destinationCommitted = backend.effects.some((effect) => effect.kind === "destination_created" && effect.completed);
                     if (destinationCommitted) {
                         if (!("note" in backend) || !backend.note || !destinationPath) throw new Error("Committed destination snapshot unavailable for indexing");
                         searchIndex.update(destinationPath, markdownDecoder.decode(backend.note.bytes), backend.note.mtime);
+                    }
+                    if (backend.effects.some((effect) => effect.kind === "source_deleted" && effect.completed)) {
+                        if (backend.status !== "ok") {
+                            if (destinationCommitted) {
+                                effects.push({ kind: "index_updated", path: destinationPath!, completed: true });
+                            }
+                            maintenanceFailurePath = path;
+                            throw new Error("Authoritative source absence unavailable for indexing");
+                        }
+                        searchIndex.remove(path);
                     }
                 } else if (operation === "create" || operation === "edit") {
                     if (!("note" in backend) || !backend.note) throw new Error("Committed note snapshot unavailable for indexing");
@@ -126,7 +137,14 @@ export function registerTools(
                 effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: true });
             } catch {
                 maintenanceSucceeded = false;
-                effects.push({ kind: "index_updated", path: destinationPath ?? path, completed: false });
+                const status = searchIndex.status;
+                searchIndex.setBuildStatus(
+                    "error",
+                    status.processed,
+                    status.total,
+                    "Incremental index maintenance failed.",
+                );
+                effects.push({ kind: "index_updated", path: maintenanceFailurePath, completed: false });
             }
         }
         const indexState: "current" | "stale" = indexWasReady && maintenanceSucceeded && searchIndex.status.state === "ready"
@@ -169,9 +187,12 @@ export function registerTools(
             deepLink: operation === "delete" ? undefined : makeDeepLink(vaultName, destinationPath ?? path),
         };
         if (backend.status === "committed_with_conflict") {
+            const indexWarning = indexState === "stale"
+                ? " The search index is not proven current; index-backed results may be stale."
+                : "";
             const value: StructuredNoteResult = {
                 schemaVersion, status: "committed_with_conflict", result, effects,
-                warning: "The requested mutation committed, but a concurrent CouchDB branch is now present.",
+                warning: "The requested mutation committed, but a concurrent CouchDB branch is now present." + indexWarning,
                 recovery: recovery("manual_reconcile", "Read the note and reconcile all conflict branches before another mutation."),
             };
             return toToolResult(value);
