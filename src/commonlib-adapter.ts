@@ -88,7 +88,11 @@ export class UpstreamAdapter extends DirectFileManipulator {
         const response = await fetcher(`${endpoint}?conflicts=true&deleted_conflicts=true`, {
             headers: { Authorization: `Basic ${Buffer.from(`${this.options.username}:${this.options.password}`).toString("base64")}` },
         });
-        if (!response.ok) throw Object.assign(new Error("CouchDB revision lookup failed"), { status: response.status });
+        if (!response.ok) {
+            // The 404 precheck runs on every create; an undrained body loses connection reuse.
+            await response.body?.cancel();
+            throw Object.assign(new Error("CouchDB revision lookup failed"), { status: response.status });
+        }
         const value: unknown = await response.json();
         if (!value || typeof value !== "object" || !("_rev" in value) || typeof value._rev !== "string") {
             throw new Error("Invalid CouchDB revision metadata");

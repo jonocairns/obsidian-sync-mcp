@@ -42,14 +42,18 @@ test -f "$package_dir/dist/main.js"
 test "$(node -p "require('$package_dir/package.json').bin['obsidian-sync-mcp']")" = "dist/main.js"
 
 # A second logger instance would silently undo production path redaction.
+# The root-entry import proves Node resolves the package's own export and worker
+# conditions unaided, which is what replaced the bundler aliases and polyfill.
 (
     cd "$package_dir"
     node --input-type=module <<'NODE'
 import assert from "node:assert/strict";
 import * as app from "octagonal-wheels/common/logger";
 import * as commonlib from "@vrtmrz/livesync-commonlib/compat/common/logger";
+import { DirectFileManipulator } from "@vrtmrz/livesync-commonlib";
 assert.equal(app.Logger, commonlib.Logger);
 assert.equal(app.setGlobalLogFunction, commonlib.setGlobalLogFunction);
+assert.equal(typeof DirectFileManipulator, "function");
 NODE
 )
 

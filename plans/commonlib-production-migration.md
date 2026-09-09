@@ -44,7 +44,6 @@ Verification date: 2026-09-09. Runtime: Node 24.19.0, pnpm 11.22.0.
 | ShellCheck / whitespace | Passed for the changed smoke script / diff |
 | Upstream integrity | All 545 shipped files match the verified registry tarball |
 
-Raw outputs are retained locally in `plans/commonlib-migration-results/`.
 The preceding agent's proof harness, plans, and original results are preserved
 locally outside this changeset. Their historical success is not being substituted
 for these production checks; the promoted contracts run through the ordinary
