@@ -556,3 +556,17 @@ MIT — see [LICENSE](https://github.com/jonocairns/obsidian-sync-mcp/blob/main/
 - [FastMCP](https://github.com/punkpeye/fastmcp) — TypeScript MCP framework
 - [CouchDB](https://couchdb.apache.org/) — document database
 - [Fly.io](https://fly.io/) — deployment platform
+
+### Commonlib development checks
+
+CouchDB mode uses the unmodified, exact-pinned upstream package
+`@vrtmrz/livesync-commonlib@0.1.23` with a small application adapter. No Git
+submodule initialization is needed. Run `pnpm typecheck`, `pnpm lint`,
+`pnpm build`, `pnpm test`, and `pnpm test:e2e` for application checks.
+`pnpm test:couchdb` additionally runs revision-race, deleted-conflict,
+chunk-failure, snapshot-consistency, and upstream reader/writer contracts.
+Set `TEST_COUCHDB_URL`, `TEST_COUCHDB_USER`, and `TEST_COUCHDB_PASSWORD` to a
+disposable CouchDB server containing only synthetic data.
+
+These checks do not establish interoperability with a running Obsidian client,
+all historical encryption formats, or long-running stability.

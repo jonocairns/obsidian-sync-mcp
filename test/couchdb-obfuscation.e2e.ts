@@ -10,7 +10,7 @@
  *     couchdb:3@sha256:9ea24cbd76522fe845d1c32c7fd1dcfc8a3ba73dcc4817d62f8a7f7f1dfaffe3
  *
  * Override with TEST_COUCHDB_URL / TEST_COUCHDB_USER / TEST_COUCHDB_PASSWORD.
- * (Runs via tsup bundling — plain tsx won't resolve the svelte/pouchdb stubs.)
+ * Runs directly with tsx against the installed upstream package.
  *
  * Seeds an obfuscated vault and a plain vault through the same
  * livesync-commonlib write path the Obsidian plugin uses, then reopens each

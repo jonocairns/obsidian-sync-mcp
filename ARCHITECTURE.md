@@ -222,19 +222,26 @@ strict structured output contract; collection and search results remain unchange
 
 ## Build (`tsup.config.ts`)
 
-livesync-commonlib is a Deno-style TypeScript library compiled for Node via tsup/esbuild:
+The application is bundled by tsup/esbuild; `@vrtmrz/livesync-commonlib@0.1.23`
+is an external npm dependency. Node resolves its package exports and worker
+conditions directly, without aliases, browser stubs, or navigator polyfills.
+`pnpm typecheck` checks the application and adapter against upstream declarations;
+local declaration support covers the SQLite cipher package and a legacy PouchDB
+`Buffer` declaration conflict with Node 24 (no Commonlib `any` shim).
 
-- `@lib/` alias → `lib/livesync-commonlib/src/`
-- `@/` alias → `src/stubs/` (Node stubs for browser-only code)
-- Extension resolution: tries `.ts`, then `/index.ts`
-- Stubs: svelte, events, KeyValueDB, hub, logger (not used in headless mode)
-- `pouchdb-browser` → `pouchdb-http` (no IndexedDB in Node)
-- `bgWorker` → mock (no web workers in Node)
-- Navigator polyfill in banner
+`src/commonlib-adapter.ts` delegates splitting, chunk IDs, storage, encryption,
+and decoding to Commonlib. It commits file metadata with ordinary CouchDB
+revision checks: no base for create, the expected base for replace/delete.
+Conflict metadata comes from HTTP because PouchDB omits deleted conflicts;
+content is decoded at that exact revision. The manager APIs and metadata shape
+are a version-sensitive boundary covered by `pnpm test:couchdb`.
+
+The application pins `octagonal-wheels` to the version used by Commonlib so the
+configured logger is shared. Debug logging emits redacted event notices only.
 
 ## Dependencies
 
-- **livesync-commonlib** (git submodule) — CouchDB document handling, chunk reassembly, E2E encryption
+- **@vrtmrz/livesync-commonlib@0.1.23** (unmodified npm package) — CouchDB document handling, chunk reassembly, E2E encryption
 - **FastMCP** — MCP server framework
 - **Hono** — HTTP framework (used by FastMCP, we add OAuth routes)
 - **PouchDB** — CouchDB client (transitive via livesync-commonlib)

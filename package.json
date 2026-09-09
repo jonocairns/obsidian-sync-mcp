@@ -31,34 +31,21 @@
     ],
     "scripts": {
         "lint": "oxlint --deny-warnings src/",
-        "typecheck": "tsc -p tsconfig.typecheck.json",
+        "typecheck": "tsc -p tsconfig.json",
         "build": "tsup",
         "start": "node dist/main.js",
         "dev": "tsx src/main.ts",
         "test": "node --import tsx --test 'src/**/*.test.ts'",
         "benchmark:search": "node --import tsx scripts/benchmark-search.ts",
         "test:e2e": "node --import tsx --test test/e2e.test.ts",
-        "test:couchdb": "tsup test/couchdb-obfuscation.e2e.ts --out-dir .harness-tmp && node .harness-tmp/couchdb-obfuscation.e2e.js"
+        "test:couchdb": "tsx test/couchdb-obfuscation.e2e.ts && node --import tsx --test --test-timeout=120000 test/commonlib-contract.e2e.ts"
     },
     "dependencies": {
+        "@vrtmrz/livesync-commonlib": "0.1.23",
         "better-sqlite3-multiple-ciphers": "^13.0.3",
-        "diff-match-patch": "^1.0.5",
         "fastmcp": "^4.16.12",
-        "fflate": "^0.8.2",
         "hono": "^4.13.2",
-        "idb": "^8.0.3",
-        "minimatch": "^10",
-        "octagonal-wheels": "^0.1.39",
-        "pouchdb-adapter-http": "^9.0.0",
-        "pouchdb-core": "^9.0.0",
-        "pouchdb-errors": "^9.0.0",
-        "pouchdb-find": "^9.0.0",
-        "pouchdb-mapreduce": "^9.0.0",
-        "pouchdb-merge": "^9.0.0",
-        "pouchdb-replication": "^9.0.0",
-        "pouchdb-utils": "^9.0.0",
-        "transform-pouch": "^2.0.0",
-        "xxhash-wasm": "^1.0.2",
+        "octagonal-wheels": "0.1.54",
         "yaml": "^2.9.0",
         "zod": "^3",
         "zod-to-json-schema": "^3.25.1"
@@ -69,6 +56,7 @@
         "oxlint": "1.79.0",
         "tsup": "^8",
         "tsx": "^4",
-        "typescript": "^5"
+        "typescript": "^5",
+        "@types/pouchdb": "6.4.2"
     }
 }
