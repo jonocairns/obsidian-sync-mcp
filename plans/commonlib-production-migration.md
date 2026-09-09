@@ -33,10 +33,10 @@ Verification date: 2026-09-09. Runtime: Node 24.19.0, pnpm 11.22.0.
 | Full `pnpm typecheck` | Passed against actual upstream declarations |
 | `pnpm lint` | Passed |
 | `pnpm build` | Passed |
-| `pnpm test` | 221 passed, zero failed/skipped |
+| `pnpm test` | 226 passed, zero failed/skipped |
 | `pnpm test:e2e` | 28 passed, zero failed/skipped |
 | Existing CouchDB E2E | Passed |
-| Promoted Commonlib contracts | 17 passed, zero failed/skipped |
+| Commonlib contracts | 18 passed, zero failed/skipped |
 | Clean packed pnpm consumer | Passed, offline production graph |
 | Clean npm consumer | Passed, actual tarball install outside checkout |
 | Shared logger privacy | Unit redaction check and both consumer identity checks passed |
@@ -93,6 +93,19 @@ remediate them. The findings are:
 - [Hono toSSG output path](https://github.com/advisories/GHSA-gqvv-2mrq-wpjv)
 - [Hono parseBody nesting](https://github.com/advisories/GHSA-g6gw-c38x-mqfc)
 - [Hono URL fragment parsing](https://github.com/advisories/GHSA-crvj-82cr-hjcx)
+
+## Credentialed URL regression
+
+The metadata fetch now removes URL userinfo before calling Node fetch, preserving
+path prefixes and the explicit Authorization header. This matches PouchDB's
+precedence for configured credentials. Five ordinary unit cases cover URL
+normalization and segment encoding. A real CouchDB contract exercises legacy
+write and versioned create/read/replace/move/delete with deliberately incorrect
+embedded credentials and valid explicit credentials, with encryption enabled.
+The credentialed unit cases and the CouchDB contract failed before the fix and
+passed afterward. Typecheck, lint, build, all 226 unit tests, existing CouchDB
+E2E, and all 18 contracts were rerun after this fix. HTTP, package, and Docker
+results above are from the preceding migration verification.
 
 ## Remaining limits
 

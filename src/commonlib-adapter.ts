@@ -3,6 +3,7 @@
  * Commonlib owns content encoding, splitting, hashing, chunk storage and encryption.
  * This adapter owns the final metadata commit and revision-consistent conflict reads.
  */
+import { couchdbDocumentUrl } from "./commonlib-http.js";
 import { DirectFileManipulator } from "@vrtmrz/livesync-commonlib";
 import { createBlob, determineTypeFromBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import type {
@@ -82,7 +83,7 @@ export class UpstreamAdapter extends DirectFileManipulator {
         // PouchDB 9 drops deleted_conflicts from GET options. Read the complete
         // revision snapshot through CouchDB's HTTP API instead. Content still
         // goes through Commonlib's decoding and encryption machinery below.
-        const endpoint = `${this.options.url.replace(/\/+$/, "")}/${encodeURIComponent(this.options.database)}/${encodeURIComponent(id)}`;
+        const endpoint = couchdbDocumentUrl(this.options.url, this.options.database, id);
         const fetcher = this.runtimeOptions.fetch ?? globalThis.fetch;
         const response = await fetcher(`${endpoint}?conflicts=true&deleted_conflicts=true`, {
             headers: { Authorization: `Basic ${Buffer.from(`${this.options.username}:${this.options.password}`).toString("base64")}` },

@@ -13,11 +13,11 @@ const password = process.env.TEST_COUCHDB_PASSWORD ?? "test";
 const headers = { Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`, "Content-Type": "application/json" };
 const encode = (value: string) => new TextEncoder().encode(value);
 
-async function fixture(run: (a: any, b: any, request: (suffix: string, init?: RequestInit) => Promise<any>) => Promise<void>, encrypted = false) {
+async function fixture(run: (a: any, b: any, request: (suffix: string, init?: RequestInit) => Promise<any>) => Promise<void>, encrypted = false, connectionUrl = url) {
     const database = `commonlib-proof-${randomUUID().replaceAll("-", "")}`;
     const response = await fetch(`${url}/${database}`, { method: "PUT", headers });
     assert.equal(response.status, 201);
-    const config = { couchdbUrl: url, couchdbUser: username, couchdbPassword: password, database,
+    const config = { couchdbUrl: connectionUrl, couchdbUser: username, couchdbPassword: password, database,
         ...(encrypted ? { passphrase: "compatibility-proof", obfuscatePaths: true } : {}) };
     const a = new Vault(config);
     const b = new Vault(config);
@@ -280,4 +280,30 @@ test(`partial move preserves a concurrently updated source`, async () => {
             { kind: "source_deleted", path: "Move/source.md", completed: false },
         ]);
     }, true);
+});
+
+test("credentialed URLs use explicit credentials for every versioned operation", async () => {
+    const connection = new URL(url);
+    // Deliberately differ from the valid explicit credentials. Both PouchDB
+    // and the metadata fetch must use couchdbUser/couchdbPassword.
+    connection.username = "ignored-user";
+    connection.password = "ignored-password";
+    await fixture(async (a) => {
+        assert.equal(await a.writeNote("Credentials/legacy.md", "legacy"), true);
+        const created = await a.createVersioned("Credentials/source.md", encode("initial"));
+        assert.equal(created.status, "ok");
+        const read = await a.readVersioned("Credentials/source.md");
+        assert.equal(read.status, "ok");
+        assert.equal(new TextDecoder().decode(read.note.bytes), "initial");
+        const replaced = await a.replaceVersioned("Credentials/source.md", read.note.version, encode("updated"));
+        assert.equal(replaced.status, "ok");
+        const moved = await a.moveVersioned("Credentials/source.md", "Credentials/destination.md", replaced.note.version);
+        assert.equal(moved.status, "ok");
+        const destination = await a.readVersioned("Credentials/destination.md");
+        assert.equal(destination.status, "ok");
+        assert.equal(new TextDecoder().decode(destination.note.bytes), "updated");
+        const deleted = await a.deleteVersioned("Credentials/destination.md", destination.note.version);
+        assert.equal(deleted.status, "ok");
+        assert.equal((await a.readVersioned("Credentials/destination.md")).code, "RESTORE_REQUIRED");
+    }, true, connection.toString().replace(/\/+$/, ""));
 });
