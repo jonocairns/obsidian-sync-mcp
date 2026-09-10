@@ -343,6 +343,10 @@ sessionful MCP serving are no longer supported. `MCP_STATELESS`,
 `FASTMCP_STATELESS`, and `--stateless` no longer configure the server and can be
 removed. OAuth login tokens still persist across requests and server restarts.
 
+HTTP request bodies are limited to 4 MiB (4,194,304 bytes), including the JSON
+envelope and escaped note content. This is lower than the previous transport's
+10 MiB allowance. Oversized writes are rejected before the note is changed.
+
 `FULL_TEXT_SEARCH=auto` is the upstream default and currently has the same
 enablement behaviour as `true`: both expose `search_notes` and persist the
 SQLite index. `true` does not force encryption; encryption follows the source

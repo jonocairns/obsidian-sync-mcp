@@ -1,5 +1,6 @@
 import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { makeDeepLink } from "./deeplink.js";
 import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
 import type { SearchBuildStatus, SearchIndex } from "./search.js";
@@ -206,6 +207,16 @@ export function registerTools(
     }
 
     server.addTool = (tool: any) => {
+        // ViteMCP otherwise converts Zod 3 inputs on every request and the SDK
+        // retains each compiled validator. Supply one JSON schema per tool,
+        // keeping Zod's validator (including coercion) rather than using AJV.
+        const schema = zodToJsonSchema(tool.parameters, { $refStrategy: "none" });
+        tool.parameters = {
+            "~standard": {
+                ...tool.parameters["~standard"],
+                jsonSchema: { input: () => schema, output: () => schema },
+            },
+        };
         const original = tool.execute;
         tool.execute = async (args: any, ctx: any) => {
             if (debugLogging) console.log(`[tool] ${tool.name} invoked`);

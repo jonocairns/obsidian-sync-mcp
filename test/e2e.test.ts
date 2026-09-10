@@ -251,6 +251,63 @@ describe("E2E: modern MCP", () => {
     });
 });
 
+describe("E2E: request-body limit", () => {
+    for (const protocol of [MCP_PROTOCOL_VERSION, "2026-07-28"]) {
+        it(`accepts 4 MiB and rejects one byte more (${protocol})`, async () => {
+            const path = `body-limit-${protocol}.md`;
+            const request = {
+                jsonrpc: "2.0", id: 73, method: "tools/call",
+                params: {
+                    name: "create_note",
+                    arguments: { path, content: "" },
+                    ...(protocol === "2026-07-28" ? {
+                        _meta: {
+                            "io.modelcontextprotocol/protocolVersion": protocol,
+                            "io.modelcontextprotocol/clientInfo": { name: "body-limit-e2e", version: "1.0.0" },
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                        },
+                    } : {}),
+                },
+            };
+            const limit = 4 * 1024 * 1024;
+            // ASCII content makes the full serialized request exactly the limit.
+            const content = "x".repeat(limit - Buffer.byteLength(JSON.stringify(request)));
+            const send = async (content: string) => {
+                request.params.arguments.content = content;
+                return fetch(BASE, {
+                    method: "POST",
+                    headers: {
+                        // The body reader closes rejected uploads; do not pool their sockets.
+                        "Connection": "close",
+                        "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream",
+                        "Authorization": `Bearer ${AUTH}`,
+                        "MCP-Protocol-Version": protocol,
+                        "Mcp-Method": "tools/call",
+                        "Mcp-Name": "create_note",
+                    },
+                    body: JSON.stringify(request),
+                });
+            };
+            try {
+                const rejected = await send(content + "x");
+                assert.equal(rejected.status, 400);
+                assert.equal((await rejected.json()).error_description, "Request body exceeds 4 MiB");
+                assert.equal(existsSync(join(vaultDir, path)), false, "oversized requests must not write a note");
+
+                const accepted = await send(content);
+                assert.equal(Buffer.byteLength(JSON.stringify(request)), limit);
+                assert.equal(accepted.status, 200);
+                const result = parseSSE(await accepted.text()).result;
+                assert.equal(result.structuredContent.status, "ok");
+                assert.equal(readFileSync(join(vaultDir, path), "utf8"), content);
+            } finally {
+                await rm(join(vaultDir, path), { force: true });
+            }
+        });
+    }
+});
+
 describe("E2E: list_notes", () => {
     it("lists all notes", async () => {
         const text = await callTool("list_notes");

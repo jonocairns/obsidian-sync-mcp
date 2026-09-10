@@ -442,6 +442,8 @@ await server.start({
         endpoint: "/mcp",
         host: process.env.HOST ?? "0.0.0.0",
         legacy: "stateless",
+        // Match the SDK's 4 MiB cap; ViteMCP does not forward this option to it.
+        maxBodySize: 4 * 1024 * 1024,
         // ViteMCP checks Origin before authenticate; its entries are hostnames,
         // with brackets retained for IPv6, rather than full origins.
         allowedOrigins: [...allowedHosts].map((host) => host.includes(":") ? `[${host}]` : host),
