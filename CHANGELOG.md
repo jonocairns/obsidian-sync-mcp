@@ -32,6 +32,15 @@
 - Enforce each dynamically registered OAuth client's declared token-endpoint authentication method for both authorization-code exchange and refresh. Confidential `client_secret_post` clients must now present their issued secret, public clients continue to use PKCE plus refresh-token rotation, and codes and refresh tokens are rejected when presented by a different client.
 - Reject authorization-code exchange until the corresponding password approval succeeds. Codes embedded in the approval form were previously exchangeable by their registered client before the user entered `MCP_AUTH_TOKEN`. Existing OAuth sessions are invalidated once on upgrade because persisted tokens cannot prove that they passed approval; client registrations are retained, so agents can reauthorize without being re-added.
 
+## [0.9.1](https://github.com/jonocairns/obsidian-sync-mcp/compare/v0.9.0...v0.9.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* make E2E startup checks release-version independent ([#22](https://github.com/jonocairns/obsidian-sync-mcp/issues/22)) ([0b7b135](https://github.com/jonocairns/obsidian-sync-mcp/commit/0b7b13592902dc40423b4abf8e75eeec1a121fb9))
+* store versioned Markdown writes as text ([a41e296](https://github.com/jonocairns/obsidian-sync-mcp/commit/a41e296ad8c69676977d7166de77e789ef9559aa))
+* store versioned Markdown writes as text ([51e971c](https://github.com/jonocairns/obsidian-sync-mcp/commit/51e971c0884d1d8a8ed70fdd5fc9bb4fbb3bcc34))
+
 ## [0.9.0](https://github.com/jonocairns/obsidian-sync-mcp/compare/v0.8.2...v0.9.0) (2026-09-06)
 
 
