@@ -2,7 +2,7 @@
 #   COUCHDB_PASSWORD=<strong-password>
 #   VAULT_NAME=MyVault
 #   MCP_AUTH_TOKEN=<password-for-mcp>
-#   MCP_STATELESS=true              (optional)
+#   MCP_ALLOWED_HOSTS=mybox.local  (optional browser-origin hostname)
 #   LIVESYNC_USER=livesync          (optional, recommended)
 #   LIVESYNC_PASSWORD=<password>    (optional, recommended)
 
@@ -47,7 +47,7 @@ services:
       COUCHDB_DATABASE: ${COUCHDB_DATABASE:-obsidian}
       VAULT_NAME: ${VAULT_NAME:-MyVault}
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:?Set MCP_AUTH_TOKEN in .env}
-      MCP_STATELESS: ${MCP_STATELESS:-false}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
       BASE_URL: ${BASE_URL:-http://localhost:8787}
       DATA_DIR: /data
     volumes:

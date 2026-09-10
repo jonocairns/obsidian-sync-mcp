@@ -1,4 +1,4 @@
-import { FastMCP } from "fastmcp";
+import { ViteMCP } from "@vitemcp/server";
 import { join } from "path";
 import { timingSafeEqual, createHash } from "crypto";
 import { watch, readFileSync, statSync } from "fs";
@@ -19,7 +19,6 @@ import {
 import { ensureDataDirWritable } from "./data-dir.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
-import { resolveMcpStatelessSetting } from "./transport.js";
 import { schemaVersion } from "./note-contract.js";
 import { parseWriteFolders } from "./write-scope.js";
 
@@ -38,20 +37,10 @@ const VAULT_NAME = process.env.VAULT_NAME ?? "MyVault";
 const PORT = parseInt(process.env.PORT ?? "8787");
 const BASE_URL = process.env.BASE_URL ?? `http://localhost:${PORT}`;
 const AUTH_TOKEN = process.env.MCP_AUTH_TOKEN;
+const allowedHosts = buildAllowedHosts(process.env.MCP_ALLOWED_HOSTS);
 const READ_ONLY = process.env.READ_ONLY === "true";
 const WRITE_FOLDERS = parseWriteFolders(process.env.WRITE_FOLDERS);
 const FULL_TEXT_SEARCH = process.env.FULL_TEXT_SEARCH;
-let MCP_STATELESS: boolean;
-try {
-    MCP_STATELESS = resolveMcpStatelessSetting(
-        process.env.MCP_STATELESS,
-        process.env.FASTMCP_STATELESS,
-        process.argv.slice(2),
-    );
-} catch (error) {
-    console.error((error as Error).message);
-    process.exit(1);
-}
 
 // Extra instructions appended to the MCP `instructions` string.
 // File wins if both are set (loud warning); missing file is fatal.
@@ -360,7 +349,7 @@ if (VAULT_PATH) {
 
 // --- MCP Server ---
 const BASE_INSTRUCTIONS = "Access and manage Markdown notes in an Obsidian vault. Single-note reads return canonical Markdown and an authoritative opaque version. Use a fresh read_note or get_note_metadata version before edit, delete, or move. Only note-identifying success responses include a separate Obsidian deep link.";
-const serverOptions: ConstructorParameters<typeof FastMCP>[0] = {
+const serverOptions: ConstructorParameters<typeof ViteMCP>[0] = {
     name: "obsidian-sync-mcp",
     version: (process.env.npm_package_version ?? schemaVersion) as `${number}.${number}.${number}`,
     instructions: MCP_EXTRA_INSTRUCTIONS ? `${BASE_INSTRUCTIONS}\n\n${MCP_EXTRA_INSTRUCTIONS}` : BASE_INSTRUCTIONS,
@@ -371,8 +360,8 @@ import type { AuthHandle } from "./auth.js";
 let auth: AuthHandle | null = null;
 
 if (AUTH_TOKEN) {
-    serverOptions.authenticate = async (req: import("http").IncomingMessage) => {
-        const header = req.headers["authorization"];
+    serverOptions.authenticate = async (req: Request) => {
+        const header = req.headers.get("authorization") ?? undefined;
         // Accept static Bearer token (for curl, MCP Inspector, custom agents)
         const expected = `Bearer ${AUTH_TOKEN}`;
         if (header && header.length === expected.length && timingSafeEqual(Buffer.from(header), Buffer.from(expected))) {
@@ -396,14 +385,13 @@ if (AUTH_TOKEN) {
     // visits reach the tool surface (CWE-350) even on a loopback bind, because
     // the browser still sends the attacker's hostname in Host. Defaults to
     // localhost; MCP_ALLOWED_HOSTS extends it for legit LAN/private-network use.
-    const allowedHosts = buildAllowedHosts(process.env.MCP_ALLOWED_HOSTS);
-    serverOptions.authenticate = async (req: import("http").IncomingMessage) => {
+    serverOptions.authenticate = async (req: Request) => {
         // Host check defeats DNS rebinding; Origin check defeats a direct
         // cross-origin browser fetch to loopback (the transport sends wildcard CORS).
-        if (!isHostAllowed(req.headers["host"], allowedHosts)) {
+        if (!isHostAllowed(req.headers.get("host"), allowedHosts)) {
             throw new Response("Forbidden: Host not allowed", { status: 403 });
         }
-        if (!isOriginAllowed(req.headers["origin"], allowedHosts)) {
+        if (!isOriginAllowed(req.headers.get("origin"), allowedHosts)) {
             throw new Response("Forbidden: cross-origin request rejected", { status: 403 });
         }
         return { authenticated: true };
@@ -415,7 +403,7 @@ if (AUTH_TOKEN) {
     }
 }
 
-const server = new FastMCP(serverOptions);
+const server = new ViteMCP(serverOptions);
 
 if (AUTH_TOKEN) {
     const tokenPath = join(authDataDir, "auth-tokens.json");
@@ -453,12 +441,15 @@ await server.start({
         port: PORT,
         endpoint: "/mcp",
         host: process.env.HOST ?? "0.0.0.0",
-        stateless: MCP_STATELESS,
+        legacy: "stateless",
+        // ViteMCP checks Origin before authenticate; its entries are hostnames,
+        // with brackets retained for IPv6, rather than full origins.
+        allowedOrigins: [...allowedHosts].map((host) => host.includes(":") ? `[${host}]` : host),
     },
 });
 console.log(
     `obsidian-sync-mcp v${process.env.npm_package_version ?? schemaVersion} listening on port ${PORT} ` +
-    `(Streamable HTTP, ${MCP_STATELESS ? "stateless" : "sessionful"})`,
+    `(Streamable HTTP, stateless)`,
 );
 
 // Prevent unhandled rejections from crashing the server (e.g. decryption failures in watcher)

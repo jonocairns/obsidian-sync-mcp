@@ -30,15 +30,14 @@ The MCP server sits between CouchDB (or the local filesystem) and AI agents. It 
 
 ## MCP transport
 
-FastMCP serves MCP over Streamable HTTP at `/mcp`. The default is sessionful
-transport for broad client compatibility. With `MCP_STATELESS=true`, FastMCP
-creates an isolated transport for each request and does not issue or retain an
-MCP session ID. This is useful behind clients and proxies that do not preserve
-session affinity.
+ViteMCP serves MCP over Streamable HTTP at `/mcp` using SDK v2. Serving is always
+stateless, with support for `2026-07-28` and legacy stateless requests. Each
+request authenticates independently; the server never issues an MCP session ID.
+OAuth tokens and the vault/search backends remain shared across requests.
 
-Stateless mode is an operational compatibility and latency option within the
-current transport. It is deliberately separate from the future protocol-level
-transport modernization on the fork roadmap.
+ViteMCP validates browser Origin hostnames against localhost and
+`MCP_ALLOWED_HOSTS` before authentication. In no-auth mode, the application also
+validates the request Host to prevent DNS rebinding.
 
 ## Search indexes (`src/search.ts`, `src/full-text-search.ts`)
 
@@ -202,7 +201,7 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 
 ## Tools (`src/tools.ts`)
 
-10 tools registered via FastMCP:
+10 tools registered via ViteMCP:
 
 | Tool | Reads from | Writes to |
 |---|---|---|
@@ -242,7 +241,7 @@ configured logger is shared. Debug logging emits redacted event notices only.
 ## Dependencies
 
 - **@vrtmrz/livesync-commonlib@0.1.23** (unmodified npm package) — CouchDB document handling, chunk reassembly, E2E encryption
-- **FastMCP** — MCP server framework
-- **Hono** — HTTP framework (used by FastMCP, we add OAuth routes)
+- **ViteMCP** — stateless MCP server framework using SDK v2
+- **Hono** — HTTP framework (used by ViteMCP, we add OAuth routes)
 - **PouchDB** — CouchDB client (transitive via livesync-commonlib)
 - **better-sqlite3-multiple-ciphers** — synchronous FTS5 and SQLCipher-compatible encrypted index storage

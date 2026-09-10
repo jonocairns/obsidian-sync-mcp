@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { FastMCP } from "fastmcp";
+import type { ViteMCP } from "@vitemcp/server";
 import { registerTools } from "./tools.js";
 import { SearchIndex } from "./search.js";
 import type {
@@ -52,7 +52,7 @@ function toolsFor(vault: VaultBackend, index = new SearchIndex()) {
             return tool;
         },
     };
-    registerTools(server as unknown as FastMCP, vault, index, "TestVault");
+    registerTools(server as unknown as ViteMCP, vault, index, "TestVault");
     return tools;
 }
 

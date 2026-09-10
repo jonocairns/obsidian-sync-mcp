@@ -1,4 +1,4 @@
-import { jsonSchemaAdapter, type JsonSchemaObject } from "fastmcp";
+import { jsonSchemaAdapter, type JsonSchemaObject } from "@vitemcp/server";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 

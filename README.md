@@ -324,10 +324,9 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `BASE_URL` | Optional | `http://localhost:PORT` | Public URL (for OAuth callbacks when using a tunnel) |
 | `PORT` | Optional | `8787` | HTTP port |
 | `HOST` | Optional | `0.0.0.0` | Bind address (`127.0.0.1` to restrict to localhost) |
-| `MCP_ALLOWED_HOSTS` | Optional | — | Comma-separated extra `Host` values accepted in no-auth mode (e.g. `192.168.1.5,mybox.local`). No-auth mode rejects any other Host to block browser DNS-rebinding; localhost is always allowed. Ignored when `MCP_AUTH_TOKEN` is set. |
+| `MCP_ALLOWED_HOSTS` | Optional | — | Comma-separated extra hostnames (e.g. `192.168.1.5,mybox.local`). Browser Origin hostnames must be local or listed here, including with bearer authentication. In no-auth mode, the request Host must also be local or listed to block DNS rebinding. Localhost and loopback addresses are always allowed, on any port. Clients without an Origin header do not need a browser-origin entry. |
 | `DATA_DIR` | Optional | `~/.obsidian-mcp` | Directory for the SQLite search index and auth tokens |
 | `FULL_TEXT_SEARCH` | Optional | `auto` | Disk-backed SQLite full-text search: `auto` and `true` enable it; `false` disables it. When `COUCHDB_PASSPHRASE` is set, the local index is encrypted with a backend-specific derived key. Note: `false` also disables index persistence — metadata is rebuilt in memory on every startup, and CouchDB mode replays the full `_changes` feed each time. |
-| `MCP_STATELESS` | Optional | `false` | Set to `true` to serve each Streamable HTTP request independently without issuing a server session ID. This avoids session affinity for clients or proxies that open a fresh connection per tool call. Leave disabled for compatibility with clients that depend on session state. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
@@ -337,10 +336,12 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 
 Set `VAULT_PATH` for filesystem mode or `COUCHDB_URL` for CouchDB mode.
 
-`MCP_STATELESS=true` changes how the current Streamable HTTP transport manages
-requests; it is not the later MCP transport-protocol migration on the fork
-roadmap. Requests must be self-contained in stateless mode, and the server does
-not retain client session state between them.
+MCP serving is always stateless. The `/mcp` endpoint supports protocol revision
+`2026-07-28` and legacy stateless requests, including `2025-11-25`. Requests must
+be self-contained; the server never issues an MCP session ID. Clients requiring
+sessionful MCP serving are no longer supported. `MCP_STATELESS`,
+`FASTMCP_STATELESS`, and `--stateless` no longer configure the server and can be
+removed. OAuth login tokens still persist across requests and server restarts.
 
 `FULL_TEXT_SEARCH=auto` is the upstream default and currently has the same
 enablement behaviour as `true`: both expose `search_notes` and persist the
@@ -553,7 +554,7 @@ MIT — see [LICENSE](https://github.com/jonocairns/obsidian-sync-mcp/blob/main/
 - [es617/obsidian-sync-mcp](https://github.com/es617/obsidian-sync-mcp) — the upstream project this fork builds on
 - [Self-hosted LiveSync](https://github.com/vrtmrz/obsidian-livesync) by vrtmrz — the Obsidian plugin and CouchDB sync protocol
 - [livesync-commonlib](https://github.com/vrtmrz/livesync-commonlib) by vrtmrz — the shared library for reading/writing the LiveSync document format
-- [FastMCP](https://github.com/punkpeye/fastmcp) — TypeScript MCP framework
+- [ViteMCP](https://github.com/vitemcp/server) — TypeScript MCP framework
 - [CouchDB](https://couchdb.apache.org/) — document database
 - [Fly.io](https://fly.io/) — deployment platform
 

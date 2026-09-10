@@ -1,4 +1,4 @@
-import type { FastMCP } from "fastmcp";
+import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
 import { makeDeepLink } from "./deeplink.js";
 import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
@@ -81,7 +81,7 @@ function withIndexStatusNotice(value: string, searchIndex: SearchIndex): string 
 }
 
 export function registerTools(
-    server: FastMCP,
+    server: ViteMCP,
     vault: VaultBackend,
     searchIndex: SearchIndex,
     vaultName: string,

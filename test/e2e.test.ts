@@ -17,9 +17,7 @@ const AUTH = "ci-test-token";
 const MCP_PROTOCOL_VERSION = "2025-11-25";
 const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
-const NODE_BIN = existsSync("/opt/homebrew/opt/node@22/bin/node")
-    ? "/opt/homebrew/opt/node@22/bin/node"
-    : "node";
+const NODE_BIN = process.execPath;
 
 let server: ChildProcess;
 let vaultDir: string;
@@ -141,7 +139,7 @@ before(async () => {
     await writeFile(join(vaultDir, "projects/test.md"), "See [[Welcome]]\n\n#project");
 
     await startServer({ VAULT_PATH: vaultDir, VAULT_NAME: "TestVault" });
-    assert.ok(sessionId, "sessionful mode should issue an MCP session ID by default");
+    assert.equal(sessionId, "", "the server must not issue an MCP session ID");
 });
 
 after(async () => {
@@ -159,6 +157,97 @@ describe("E2E: Auth", () => {
             body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "e2e", version: "1.0" } } }),
         });
         assert.equal(resp.status, 401);
+        assert.equal(resp.headers.get("www-authenticate"), `Bearer resource_metadata="http://localhost:${PORT}/.well-known/oauth-protected-resource"`);
+    });
+
+    it("keeps custom OAuth discovery routes mounted outside MCP authentication", async () => {
+        const resource = await fetch(`http://localhost:${PORT}/.well-known/oauth-protected-resource`);
+        assert.equal(resource.status, 200);
+        assert.equal((await resource.json()).resource, `http://localhost:${PORT}`);
+        const issuer = await fetch(`http://localhost:${PORT}/.well-known/oauth-authorization-server`);
+        assert.equal(issuer.status, 200);
+        assert.equal((await issuer.json()).token_endpoint, `http://localhost:${PORT}/oauth/token`);
+    });
+
+    it("checks browser origins even with a valid bearer token", async () => {
+        for (const [origin, status] of [["http://localhost:4321", 200], ["https://attacker.example", 403]] as const) {
+            const response = await fetch(BASE, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": `Bearer ${AUTH}`,
+                    "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+                    "Origin": origin,
+                },
+                body: JSON.stringify({ jsonrpc: "2.0", id: 72, method: "tools/list", params: {} }),
+            });
+            assert.equal(response.status, status);
+            const body = await response.text();
+            if (status === 200) assert.ok(parseSSE(body).result.tools.some((tool: any) => tool.name === "read_note"));
+        }
+    });
+});
+
+describe("E2E: modern MCP", () => {
+    async function modernCall(method: string, params: Record<string, unknown> = {}, token = AUTH) {
+        const response = await fetch(BASE, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "Authorization": `Bearer ${token}`,
+                "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": method,
+                ...(typeof params.name === "string" ? { "Mcp-Name": params.name } : {}),
+            },
+            body: JSON.stringify({
+                jsonrpc: "2.0", id: 71, method,
+                params: {
+                    ...params,
+                    _meta: {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientInfo": { name: "modern-e2e", version: "1.0.0" },
+                        "io.modelcontextprotocol/clientCapabilities": {},
+                    },
+                },
+            }),
+        });
+        assert.equal(response.headers.get("mcp-session-id"), null);
+        return response;
+    }
+
+    it("discovers and serves tools using the modern envelope without a session", async () => {
+        const discovery = await modernCall("server/discover");
+        const discovered = parseSSE(await discovery.text());
+        assert.equal(discovery.status, 200, JSON.stringify(discovered));
+        assert.ok(discovered.result.supportedVersions.includes("2026-07-28"));
+        assert.equal(discovered.result._meta["io.modelcontextprotocol/serverInfo"].version, PACKAGE_VERSION);
+
+        const listing = await modernCall("tools/list");
+        const listed = parseSSE(await listing.text());
+        assert.equal(listing.status, 200, JSON.stringify(listed));
+        assert.ok(listed.result.tools.some((tool: any) => tool.name === "read_note" && tool.outputSchema));
+
+        const read = await modernCall("tools/call", { name: "read_note", arguments: { path: "Welcome.md" } });
+        const result = parseSSE(await read.text());
+        assert.equal(read.status, 200, JSON.stringify(result));
+        assert.equal(result.result.resultType, "complete");
+        assert.equal(result.result.structuredContent.status, "ok");
+        assert.equal(result.result.structuredContent.result.markdown, "---\ntitle: Welcome\ntags: [intro]\n---\n# Welcome\nHello world");
+
+        const missing = await modernCall("tools/call", { name: "read_note", arguments: { path: "missing.md" } });
+        const failure = parseSSE(await missing.text());
+        assert.equal(missing.status, 200);
+        assert.equal(failure.result.isError, true);
+        assert.equal(failure.result.structuredContent.error.code, "NOTE_NOT_FOUND");
+    });
+
+    it("authenticates every modern request, including after successful discovery", async () => {
+        assert.equal((await modernCall("server/discover")).status, 200);
+        const denied = await modernCall("tools/list", {}, "wrong-token");
+        assert.equal(denied.status, 401);
+        assert.equal(denied.headers.get("www-authenticate"), `Bearer resource_metadata="http://localhost:${PORT}/.well-known/oauth-protected-resource"`);
     });
 });
 
@@ -430,7 +519,6 @@ describe("E2E: stateless Streamable HTTP", () => {
         await startServer({
             VAULT_PATH: vaultDir,
             VAULT_NAME: "TestVault",
-            MCP_STATELESS: "true",
             LOG_LEVEL: "debug",
         });
 
@@ -444,7 +532,7 @@ describe("E2E: stateless Streamable HTTP", () => {
         await new Promise((r) => setTimeout(r, 1500));
         assert.ok(
             !serverLogs.includes("could not infer client capabilities"),
-            "FastMCP v4 should not poll unavailable client capabilities in stateless mode",
+            "stateless serving should not poll unavailable client capabilities",
         );
 
         const secretPath = "privacy-do-not-log-this-path.md";
@@ -496,7 +584,8 @@ describe("E2E: no-auth Host allowlist (DNS-rebinding)", () => {
     });
 
     it("rejects userinfo/path smuggling in Host", async () => {
-        assert.equal(await initializeWithHost("attacker.example@127.0.0.1"), 403);
+        // The Web Request adapter rejects URL credentials before authentication.
+        assert.equal(await initializeWithHost("attacker.example@127.0.0.1"), 400);
     });
 
     it("allows a genuine local Host", async () => {
@@ -510,12 +599,14 @@ describe("E2E: no-auth Host allowlist (DNS-rebinding)", () => {
 
     it("allows a local browser Origin (e.g. MCP Inspector on localhost)", async () => {
         assert.equal(await initializeWithHost(`127.0.0.1:${PORT}`, `http://localhost:${PORT}`), 200);
+        assert.equal(await initializeWithHost(`127.0.0.1:${PORT}`, "http://[::1]:4321"), 200);
     });
 
     it("honors MCP_ALLOWED_HOSTS", async () => {
         await stopServer();
         await startServer({ VAULT_PATH: vaultDir, VAULT_NAME: "TestVault", MCP_AUTH_TOKEN: "", MCP_ALLOWED_HOSTS: "myhost.local" });
         assert.equal(await initializeWithHost("myhost.local"), 200);
+        assert.equal(await initializeWithHost("myhost.local", "https://myhost.local:4321"), 200);
         assert.equal(await initializeWithHost("attacker.example"), 403);
     });
 });
