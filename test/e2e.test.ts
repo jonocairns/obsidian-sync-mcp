@@ -8,13 +8,14 @@ import { mkdtemp, rm, mkdir, writeFile, unlink } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawn, type ChildProcess } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { request as httpRequest } from "node:http";
 
 const PORT = 9877;
 const BASE = `http://localhost:${PORT}/mcp`;
 const AUTH = "ci-test-token";
 const MCP_PROTOCOL_VERSION = "2025-11-25";
+const PACKAGE_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const NODE_BIN = existsSync("/opt/homebrew/opt/node@22/bin/node")
     ? "/opt/homebrew/opt/node@22/bin/node"
@@ -93,7 +94,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
                     MCP_PROTOCOL_VERSION,
                     "server should negotiate MCP protocol 2025-11-25",
                 );
-                assert.equal(lastInitResult?.result?.serverInfo?.version, "0.9.0");
+                assert.equal(lastInitResult?.result?.serverInfo?.version, PACKAGE_VERSION, "server should report the package version");
 
                 const initialized = await fetch(BASE, {
                     method: "POST",
@@ -113,6 +114,7 @@ async function startServer(env: Record<string, string> = {}): Promise<void> {
                 return;
             }
         } catch (error) {
+            if (error instanceof assert.AssertionError) throw error;
             lastError = error;
         }
         await new Promise((r) => setTimeout(r, 200));
