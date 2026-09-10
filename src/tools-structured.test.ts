@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { FastMCP } from "fastmcp";
+import type { ViteMCP } from "@vitemcp/server";
 import { registerTools } from "./tools.js";
 import { SearchIndex } from "./search.js";
 import type {
@@ -52,7 +52,7 @@ function toolsFor(vault: VaultBackend, index = new SearchIndex()) {
             return tool;
         },
     };
-    registerTools(server as unknown as FastMCP, vault, index, "TestVault");
+    registerTools(server as unknown as ViteMCP, vault, index, "TestVault");
     return tools;
 }
 
@@ -63,6 +63,21 @@ async function call(tools: Map<string, any>, name: string, args: Record<string, 
     assert.equal(value.content[0].type, "text");
     return value;
 }
+
+it("reuses JSON schemas for every tool while preserving Zod validation", async () => {
+    const tools = toolsFor(backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] }));
+    for (const tool of tools.values()) {
+        const standard = tool.parameters["~standard"];
+        assert.ok(standard.jsonSchema, `${tool.name} must bypass ViteMCP's per-request conversion`);
+        const schema = standard.jsonSchema.input();
+        assert.equal(schema.type, "object");
+        assert.strictEqual(standard.jsonSchema.input(), schema);
+        assert.strictEqual(standard.jsonSchema.output(), schema);
+    }
+    const validate = tools.get("list_notes").parameters["~standard"].validate;
+    assert.deepEqual((await validate({ limit: "2" })).value, { limit: 2 });
+    assert.ok((await validate({ limit: "not-a-number" })).issues.length);
+});
 
 describe("structured mutation outcomes", () => {
     for (const operation of ["create_note", "edit_note"] as const) {
