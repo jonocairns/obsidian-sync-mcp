@@ -2,6 +2,9 @@ minimumReleaseAge: 10080
 minimumReleaseAgeStrict: true
 minimumReleaseAgeIgnoreMissingTime: false
 minimumReleaseAgeExclude:
+  # User-approved migration pins after exact-release advisory checks (2026-09-09).
+  - "@vrtmrz/livesync-commonlib@0.1.23"
+  - "octagonal-wheels@0.1.54"
   # Grandfathered from the npm lockfile during the pnpm migration.
   - "axios@1.20.0"
   - "fastmcp@4.16.12"

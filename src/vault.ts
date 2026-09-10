@@ -2,14 +2,13 @@
  * Vault access layer — wraps DirectFileManipulator from livesync-commonlib.
  */
 
-import { DirectFileManipulator } from "@lib/API/DirectFileManipulator";
-import type { DirectFileManipulatorOptions } from "@lib/API/DirectFileManipulator";
-import { createTextBlob } from "@lib/common/utils";
-import { decodeBinary } from "@lib/string_and_binary/convert";
-import type { FilePathWithPrefix } from "@lib/common/types";
-import type { MetaEntry } from "@lib/API/DirectFileManipulatorV2";
+import { UpstreamAdapter as DirectFileManipulator } from "./commonlib-adapter.js";
+import type { DirectFileManipulatorOptions } from "@vrtmrz/livesync-commonlib";
+import { createTextBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
+import { decodeBinary } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/convert";
+import type { FilePathWithPrefix } from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
-import { clearHandlers } from "@lib/replication/SyncParamsHandler";
+import { clearHandlers } from "@vrtmrz/livesync-commonlib/compat/replication/SyncParamsHandler";
 import { parseFrontmatterAndLinks } from "./parse.js";
 import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, BackendReadResult, VersionedNote } from "./vault-backend.js";
 import { deriveContent } from "./index-sync.js";
@@ -105,15 +104,14 @@ export class Vault implements VaultBackend {
         let since: string | number = 0;
 
         while (ids.length < SAMPLE_TARGET) {
-            // db is the opaque livesync-commonlib boundary (see typecheck/shims.d.ts);
-            // type the changes-feed shape we actually consume here.
-            const result = (await db.changes({
+            // Annotate the paginated sequence to avoid circular inference through `since`.
+            const result: { results: Array<{ id: string }>; last_seq: string | number } = await db.changes({
                 since,
                 limit: BATCH_SIZE,
                 // Only real file entries — excludes chunks, versioninfo, milestones, sync params.
                 selector: { type: { $in: ["plain", "newnote"] } },
                 live: false,
-            })) as { results: Array<{ id: string }>; last_seq: string | number };
+            });
             for (const change of result.results) {
                 if (ids.length >= SAMPLE_TARGET) break;
                 ids.push(change.id);
@@ -199,8 +197,7 @@ export class Vault implements VaultBackend {
     watchChanges(callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void): void {
         // catchUp already set this.manipulator.since to the right point
         this.manipulator.beginWatch(
-            // manipulator is an opaque boundary (see typecheck/shims.d.ts)
-            (doc: unknown, seq: string | number) => Vault.docToChange(doc, callback, seq),
+            (doc, seq) => Vault.docToChange(doc, callback, seq),
             Vault.mdFilter,
         );
     }
@@ -231,13 +228,7 @@ export class Vault implements VaultBackend {
     async readVersioned(path: string): Promise<BackendReadResult> {
         try {
             this.validatePath(path);
-            const entry = await this.manipulator.liveSyncLocalDB.getDBEntry(
-                path as FilePathWithPrefix,
-                { conflicts: true, deleted_conflicts: true } as any,
-                false,
-                true,
-                true,
-            ) as any;
+            const entry = await this.manipulator.getVersionedEntry(path as FilePathWithPrefix);
             if (!entry) return { status: "error", code: await this.tombstoneExists(path) ? "RESTORE_REQUIRED" : "NOTE_NOT_FOUND" };
             if (entry.deleted || entry._deleted) return { status: "error", code: "RESTORE_REQUIRED" };
             const conflicts = [...(entry._conflicts ?? []), ...(entry._deleted_conflicts ?? [])].sort();
@@ -341,16 +332,12 @@ export class Vault implements VaultBackend {
         if (current.note.version !== expectedVersion) return { status: "conflict", code: "STALE_VERSION", effects: [effect] };
         try {
             clearHandlers();
-            const response = await this.manipulator.liveSyncLocalDB.storeDeletionAtRevision(
-                path as FilePathWithPrefix,
-                this.winnerRevision(current.note),
-                true,
-            );
+            const response = await this.manipulator.strictDelete(path as FilePathWithPrefix, this.winnerRevision(current.note));
             if (!response) return { status: "error", code: "BACKEND_UNAVAILABLE", effects: [effect] };
             effect.completed = true;
             try {
                 const id = await this.manipulator.path2id(path as FilePathWithPrefix);
-                const post = await this.manipulator.liveSyncLocalDB.getRaw(id, { conflicts: true, deleted_conflicts: true } as any) as any;
+                const post = await this.manipulator.readRevisionMetadata(id);
                 const branches = [...(post._conflicts ?? []), ...(post._deleted_conflicts ?? [])];
                 if (branches.length > 0) return { status: "committed_with_conflict", effects: [effect] };
             } catch {
@@ -454,7 +441,7 @@ export class Vault implements VaultBackend {
         if (folder && !folder.endsWith("/")) folder += "/";
         const results: NoteListing[] = [];
         for await (const doc of this.manipulator.enumerateAllNormalDocs({ metaOnly: true })) {
-            const entry = doc as MetaEntry;
+            const entry = doc;
             if (entry.deleted) continue;
             const notePath = entry.path ?? "";
             if (!notePath.endsWith(".md")) continue;

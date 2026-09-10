@@ -48,8 +48,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -62,8 +60,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -74,7 +70,9 @@ jobs:
       - run: pnpm pack --dry-run
       - run: pnpm pack
       - name: Smoke-test packaged artifact
-        run: scripts/ci/package-smoke.sh ./*.tgz
+        run: |
+          scripts/ci/package-smoke.sh ./*.tgz
+          scripts/ci/package-smoke.sh ./*.tgz npm
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: package
@@ -84,8 +82,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -99,8 +95,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -129,8 +123,6 @@ jobs:
           --health-retries 12
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -143,8 +135,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -236,7 +226,6 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           ref: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || github.sha }}
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1
@@ -272,7 +261,6 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           ref: ${{ needs.release-artifact.outputs.tag_name }}
-          submodules: recursive
       - uses: NixOS/nix-installer-action@62c1943b776c509394b550f3f983adc14e9212d6 # v1.0.0
         with:
           installer-version: 2.35.1

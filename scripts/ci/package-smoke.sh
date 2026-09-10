@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-archive_input=${1:?usage: package-smoke.sh PACKAGE.tgz}
+archive_input=${1:?usage: package-smoke.sh PACKAGE.tgz [pnpm|npm]}
 archive_dir=$(CDPATH='' cd -- "$(dirname -- "$archive_input")" && pwd)
 archive="$archive_dir/$(basename -- "$archive_input")"
 repo_root=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 smoke_dir=$(mktemp -d)
 server_pid=
+package_dir="$smoke_dir/package"
+installer=${2:-pnpm}
 
 # shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
 cleanup() {
@@ -19,26 +21,47 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$smoke_dir/vault" "$smoke_dir/data"
-tar -xzf "$archive" -C "$smoke_dir"
+case "$installer" in
+    pnpm)
+        tar -xzf "$archive" -C "$smoke_dir"
+        # Install the reviewed production graph outside the checkout.
+        cp "$repo_root/pnpm-lock.yaml" "$repo_root/pnpm-workspace.yaml" "$package_dir/"
+        pnpm --dir "$package_dir" install --prod --frozen-lockfile --offline --trust-lockfile
+        ;;
+    npm)
+        # Exercise a real npm consumer, including package lifecycle and bin setup.
+        mkdir -p "$smoke_dir/consumer"
+        npm --prefix "$smoke_dir/consumer" install --omit=dev --no-audit --no-fund "$archive"
+        package_dir="$smoke_dir/consumer/node_modules/obsidian-sync-mcp"
+        test -x "$smoke_dir/consumer/node_modules/.bin/obsidian-sync-mcp"
+        ;;
+    *) echo "Unknown installer: $installer" >&2; exit 2 ;;
+esac
 
-test -f "$smoke_dir/package/dist/main.js"
-test "$(node -p "require('$smoke_dir/package/package.json').bin['obsidian-sync-mcp']")" = "dist/main.js"
+test -f "$package_dir/dist/main.js"
+test "$(node -p "require('$package_dir/package.json').bin['obsidian-sync-mcp']")" = "dist/main.js"
 
-# Install exactly the reviewed production graph outside the checkout. This
-# prevents Node from satisfying missing package dependencies via node_modules
-# in the repository while keeping the smoke test independent of the registry.
-cp "$repo_root/pnpm-lock.yaml" "$repo_root/pnpm-workspace.yaml" "$smoke_dir/package/"
-pnpm --dir "$smoke_dir/package" install \
-    --prod \
-    --frozen-lockfile \
-    --offline \
-    --trust-lockfile
+# A second logger instance would silently undo production path redaction.
+# The root-entry import proves Node resolves the package's own export and worker
+# conditions unaided, which is what replaced the bundler aliases and polyfill.
+(
+    cd "$package_dir"
+    node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import * as app from "octagonal-wheels/common/logger";
+import * as commonlib from "@vrtmrz/livesync-commonlib/compat/common/logger";
+import { DirectFileManipulator } from "@vrtmrz/livesync-commonlib";
+assert.equal(app.Logger, commonlib.Logger);
+assert.equal(app.setGlobalLogFunction, commonlib.setGlobalLogFunction);
+assert.equal(typeof DirectFileManipulator, "function");
+NODE
+)
 
 PORT=9876 \
 VAULT_PATH="$smoke_dir/vault" \
 DATA_DIR="$smoke_dir/data" \
 MCP_AUTH_TOKEN=ci-test-token \
-node "$smoke_dir/package/dist/main.js" >"$smoke_dir/server.log" 2>&1 &
+node "$package_dir/dist/main.js" >"$smoke_dir/server.log" 2>&1 &
 server_pid=$!
 
 for _attempt in {1..50}; do

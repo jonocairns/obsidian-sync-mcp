@@ -3,7 +3,7 @@ import { join } from "path";
 import { timingSafeEqual, createHash } from "crypto";
 import { watch, readFileSync, statSync } from "fs";
 import { realpath, stat } from "fs/promises";
-import { setGlobalLogFunction, LEVEL_INFO } from "octagonal-wheels/common/logger";
+import { configureCommonlibLogging } from "./commonlib-logging.js";
 import { mountPasswordAuth } from "./auth.js";
 import { planFilesystemIndexSync, SearchIndex } from "./search.js";
 import { applyIndexChange } from "./index-sync.js";
@@ -23,13 +23,8 @@ import { resolveMcpStatelessSetting } from "./transport.js";
 import { schemaVersion } from "./note-contract.js";
 import { parseWriteFolders } from "./write-scope.js";
 
-// Suppress livesync-commonlib logs that expose vault file paths in production.
-// Set LOG_LEVEL=debug to see all library logs during development.
 const debugLogging = process.env.LOG_LEVEL === "debug";
-setGlobalLogFunction((_message, level = LEVEL_INFO) => {
-    if (level < LEVEL_INFO) return;
-    if (debugLogging) console.log("[livesync] internal event (details redacted)");
-});
+configureCommonlibLogging(debugLogging);
 
 // --- Configuration from environment ---
 const VAULT_PATH = process.env.VAULT_PATH; // Local mode: path to vault directory
