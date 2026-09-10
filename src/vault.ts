@@ -4,7 +4,7 @@
 
 import { UpstreamAdapter as DirectFileManipulator } from "./commonlib-adapter.js";
 import type { DirectFileManipulatorOptions } from "@vrtmrz/livesync-commonlib";
-import { createBinaryBlob, createTextBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
+import { createTextBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import { decodeBinary } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/convert";
 import type { FilePathWithPrefix } from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
@@ -284,9 +284,11 @@ export class Vault implements VaultBackend {
         const effect = { kind: expectedRevision ? "note_updated" as const : "note_created" as const, path, completed: false };
         try {
             clearHandlers();
+            // LiveSync derives the encoding from the Blob MIME type, not the
+            // "plain" argument. Binary chunks in a .md file fail its client size check.
             const committed = await this.manipulator.put(
                 path,
-                createBinaryBlob(Uint8Array.from(bytes)),
+                new Blob([Uint8Array.from(bytes)], { type: "text/plain" }),
                 { ctime, mtime: Date.now(), size: bytes.byteLength },
                 "plain",
                 expectedRevision,

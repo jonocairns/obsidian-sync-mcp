@@ -246,7 +246,7 @@ test(`failed chunk storage cannot commit file metadata`, async () => {
 test(`native upstream reader can decode adapter-created chunks`, async () => {
     await fixture(async (a, b) => {
         const { DirectFileManipulator } = await import("@vrtmrz/livesync-commonlib");
-        const { decodeBinary } = await import("@vrtmrz/livesync-commonlib/compat/string_and_binary/convert");
+        const { readAsBlob } = await import("@vrtmrz/livesync-commonlib/compat/common/utils");
         const native = new DirectFileManipulator(a.manipulator.options);
         try {
             await native.ready.promise;
@@ -255,7 +255,10 @@ test(`native upstream reader can decode adapter-created chunks`, async () => {
             assert.equal((await a.createVersioned(path, bytes)).status, "ok");
             const read = await native.get(path as any);
             assert.ok(read && Array.isArray(read.data));
-            assert.deepEqual(new Uint8Array(decodeBinary(read.data)), bytes);
+            assert.equal(read.type, "plain");
+            const blob = readAsBlob(read);
+            assert.equal(blob.size, read.size);
+            assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), bytes);
             assert.equal(await native.put("Interop/native.md", new Blob(["native writer"], { type: "text/plain" }), {
                 ctime: Date.now(), mtime: Date.now(), size: 13,
             }), true);

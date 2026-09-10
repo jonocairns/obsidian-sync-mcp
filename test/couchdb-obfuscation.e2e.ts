@@ -19,6 +19,7 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readAsBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import { Vault } from "../src/vault.js";
 
 const base = {
@@ -33,6 +34,7 @@ const databases = {
     obfuscated: `obsidian-mcp-test-obf-${runId}`,
     plain: `obsidian-mcp-test-plain-${runId}`,
     core: `obsidian-mcp-test-core-${runId}`,
+    interop: `obsidian-mcp-test-interop-${runId}`,
 };
 
 const NOTE_CYRILLIC = "Inbox/Тест.md";
@@ -154,6 +156,51 @@ step("Versioned winner-CAS contract");
     assert.equal(refused.status === "conflict" && refused.code, "PRE_EXISTING_CONFLICT");
     await v.close();
     console.log("create/read/replace/move/delete/tombstone/conflict winner-CAS scenarios OK");
+}
+
+// Server read-back decodes binary Markdown, but Obsidian treats .md as text.
+// Exercise the client's size check and bytes, not just our own read decoder.
+step("Versioned Markdown writes use the client-compatible text representation");
+for (const encrypted of [false, true]) {
+    const v = new Vault({
+        ...base,
+        database: encrypted ? databases.interop : databases.core,
+        passphrase: encrypted ? passphrase : undefined,
+        obfuscatePaths: encrypted,
+    });
+    await v.init();
+    const assertClientBytes = async (path: string, expected: Uint8Array) => {
+        const entry = await (v as any).manipulator.liveSyncLocalDB.getDBEntry(path);
+        assert.ok(entry, "client must be able to load the written entry");
+        const blob = readAsBlob(entry);
+        assert.equal(blob.size, entry.size, "Obsidian must not reject Markdown as corrupted");
+        assert.equal(entry.type, "plain", "Markdown must be stored as text, not base64 binary");
+        assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), expected);
+    };
+    try {
+        for (const [name, content] of [
+            ["probe", "x".repeat(274)],
+            ["unicode", "---\r\ntitle: Тест 🥝\r\n---\r\nExact body without a final newline"],
+            ["empty", ""],
+        ]) {
+            const path = `Interop/${name}.md`;
+            const bytes = encoder.encode(content);
+            const created = await v.createVersioned(path, bytes);
+            assert.equal(created.status, "ok");
+            await assertClientBytes(path, bytes);
+            if (created.status !== "ok" || !created.note) throw new Error("missing created note");
+            const replacement = encoder.encode("Edited: café 🥝\r\n" + content);
+            const edited = await v.replaceVersioned(path, created.note.version, replacement);
+            assert.equal(edited.status, "ok");
+            await assertClientBytes(path, replacement);
+            if (edited.status !== "ok" || !edited.note) throw new Error("missing edited note");
+            const destination = `Interop/moved-${name}.md`;
+            assert.equal((await v.moveVersioned(path, destination, edited.note.version)).status, "ok");
+            await assertClientBytes(destination, replacement);
+        }
+    } finally {
+        await v.close();
+    }
 }
 
 // --- Seed: obfuscated vault (correct settings) ---
