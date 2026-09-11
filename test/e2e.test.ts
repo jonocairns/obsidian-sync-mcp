@@ -289,10 +289,24 @@ describe("E2E: request-body limit", () => {
                     body: JSON.stringify(request),
                 });
             };
+            // The server rejects an oversized Content-Length before reading the body and
+            // closes the socket as soon as that 400 flushes. When the teardown beats the
+            // upload the client sees EPIPE, or an RST that discards the response body,
+            // instead of the rejection. Retry: a rejected request writes nothing.
+            const sendRejected = async (content: string) => {
+                for (let attempt = 2; ; attempt--) {
+                    try {
+                        const response = await send(content);
+                        return { status: response.status, payload: await response.json() as any };
+                    } catch (error) {
+                        if (attempt === 0) throw error;
+                    }
+                }
+            };
             try {
-                const rejected = await send(content + "x");
+                const rejected = await sendRejected(content + "x");
                 assert.equal(rejected.status, 400);
-                assert.equal((await rejected.json()).error_description, "Request body exceeds 4 MiB");
+                assert.equal(rejected.payload.error_description, "Request body exceeds 4 MiB");
                 assert.equal(existsSync(join(vaultDir, path)), false, "oversized requests must not write a note");
 
                 const accepted = await send(content);
