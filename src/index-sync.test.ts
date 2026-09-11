@@ -31,6 +31,20 @@ describe("deriveContent — delete vs empty", () => {
     it("returns the joined body for a normal note", () => {
         assert.equal(deriveContent({ data: ["# Title\n", "body"] }), "# Title\nbody");
     });
+    it("decodes binary and legacy inline bodies using the same UTF-8 representation", () => {
+        const body = "# UTF-8\r\n日本語 😀";
+        const base64 = Buffer.from(body).toString("base64");
+        for (const type of ["newnote", "notes"]) {
+            assert.equal(deriveContent({ type, data: base64 }), body);
+            assert.equal(deriveContent({ type, data: [base64] }), body);
+        }
+        assert.equal(deriveContent({ type: "plain", data: body }), body);
+    });
+    it("handles binary empty notes and skips decoding deleted content", () => {
+        assert.equal(deriveContent({ type: "newnote", data: [] }), "");
+        assert.equal(deriveContent({ _deleted: true, data: { malformed: true } }), null);
+        assert.throws(() => deriveContent({ data: { malformed: true } }), /Invalid note content/);
+    });
 });
 
 describe("applyIndexChange — routing", () => {

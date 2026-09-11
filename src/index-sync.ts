@@ -1,9 +1,11 @@
 /**
  * Shared search-index sync helpers.
  *
- * Kept dependency-free (no livesync-commonlib imports) so the delete-vs-empty
- * routing is unit-testable in isolation.
+ * Content decoding is shared with authoritative reads, including binary and
+ * legacy entries. Routing remains unit-testable without a database.
  */
+
+import { decodeNoteBytes, type EncodedNoteContent } from "./note-content.js";
 
 export interface IndexTarget {
     update(path: string, content: string, mtime?: number): void;
@@ -17,9 +19,9 @@ export interface IndexTarget {
  * yields `""` so a zero-byte note stays distinguishable from a deletion —
  * without this, a note that serializes with no `data` array would look deleted.
  */
-export function deriveContent(doc: { deleted?: boolean; data?: unknown }): string | null {
-    if (doc.deleted) return null;
-    return "data" in doc && Array.isArray(doc.data) ? doc.data.join("") : "";
+export function deriveContent(doc: EncodedNoteContent & { deleted?: boolean; _deleted?: boolean }): string | null {
+    if (doc.deleted || doc._deleted) return null;
+    return new TextDecoder().decode(decodeNoteBytes(doc));
 }
 
 /**

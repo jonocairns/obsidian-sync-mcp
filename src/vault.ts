@@ -5,7 +5,7 @@
 import { UpstreamAdapter as DirectFileManipulator } from "./commonlib-adapter.js";
 import type { DirectFileManipulatorOptions } from "@vrtmrz/livesync-commonlib";
 import { createTextBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
-import { decodeBinary } from "@vrtmrz/livesync-commonlib/compat/string_and_binary/convert";
+import { decodeNoteBytes } from "./note-content.js";
 import type { FilePathWithPrefix } from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
 import { clearHandlers } from "@vrtmrz/livesync-commonlib/compat/replication/SyncParamsHandler";
@@ -14,6 +14,12 @@ import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, Backen
 import { deriveContent } from "./index-sync.js";
 import { classifyIds, type IdFormat } from "./id-format.js";
 import { encodeNoteVersion } from "./note-version.js";
+import { watchInOrder } from "./ordered-change-feed.js";
+
+type NoteChangeCallback = (path: string, content: string | null, mtime?: number, seq?: string | number) => void;
+type CouchChange = { id: string; seq: string | number; deleted?: boolean; doc?: any };
+// Mango's $ne does not match missing fields. A bare tombstone has no `type`.
+const FILE_CHANGES_SELECTOR = { $or: [{ type: { $ne: "leaf" } }, { _deleted: true }] };
 
 export interface VaultConfig {
     couchdbUrl: string;
@@ -29,6 +35,10 @@ export class Vault implements VaultBackend {
     private manipulator: DirectFileManipulator;
     private passphrase: string | undefined;
     private config: VaultConfig;
+    // Rehydrated from persisted index paths at startup. Retain mappings after
+    // deletion too: a failed index transaction must be able to replay removals.
+    private indexedPathsById = new Map<string, Set<string>>();
+    private stopWatching?: () => Promise<void>;
 
     constructor(config: VaultConfig) {
         this.config = config;
@@ -109,7 +119,7 @@ export class Vault implements VaultBackend {
                 since,
                 limit: BATCH_SIZE,
                 // Only real file entries — excludes chunks, versioninfo, milestones, sync params.
-                selector: { type: { $in: ["plain", "newnote"] } },
+                selector: { type: { $in: ["plain", "newnote", "notes"] } },
                 live: false,
             });
             for (const change of result.results) {
@@ -123,27 +133,66 @@ export class Vault implements VaultBackend {
     }
 
     async close(): Promise<void> {
+        await this.stopWatching?.();
+        this.stopWatching = undefined;
         this.manipulator.endWatch();
         await this.manipulator.close();
     }
 
-    private static mdFilter(meta: any): boolean {
-        return (meta.path ?? "").endsWith(".md");
+    private rememberPath(id: string, path: string): void {
+        const paths = this.indexedPathsById.get(id) ?? new Set<string>();
+        paths.add(path);
+        this.indexedPathsById.set(id, paths);
     }
 
-    private static docToChange(doc: any, callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void, seq?: string | number) {
-        const path = doc.path ?? "";
-        if (!path.endsWith(".md")) return;
-        // null => deleted (remove); "" => existing empty note (index it, don't drop)
+    private async processChange(change: CouchChange, callback: NoteChangeCallback, indexedPaths?: () => readonly string[]): Promise<void> {
+        const meta = change.doc;
+        const id = change.id;
+        if (id.startsWith("h:") || id.startsWith("_")) return;
+        let path = meta?.path ?? "";
+        if (isPathProbablyObfuscated(path) && this.passphrase) {
+            path = await decrypt(path, this.passphrase, false);
+        }
+        if (change.deleted || meta?._deleted || meta?.deleted) {
+            if (path.endsWith(".md")) this.rememberPath(id, path);
+            // Tool mutations can populate the index before the live feed sees
+            // their create event. Consult current index paths for an unknown ID.
+            if (!this.indexedPathsById.has(id) && indexedPaths) {
+                for (const candidate of indexedPaths()) {
+                    this.rememberPath(await this.manipulator.path2id(candidate as FilePathWithPrefix), candidate);
+                }
+            }
+            // A metadata-free obfuscated ID cannot be reversed. Unknown IDs
+            // have no indexed entry: persisted index paths seed this map.
+            const knownPaths = [...(this.indexedPathsById.get(id) ?? [])];
+            for (const [index, knownPath] of knownPaths.entries()) {
+                // All case aliases must be removed before committing this seq.
+                callback(knownPath, null, undefined, index === knownPaths.length - 1 ? change.seq : undefined);
+            }
+            return;
+        }
+        if (!meta || !path.endsWith(".md")) return;
+        if (meta.type && !["plain", "newnote", "notes"].includes(meta.type)) return;
+        // Do not checkpoint past a failed decode/chunk load. Catch-up rolls
+        // back and the live feed retries this sequence before handling later ones.
+        const doc = await this.manipulator.getByMeta({ ...meta, path });
         const content = deriveContent(doc);
-        callback(path, content, content === null ? undefined : doc.mtime, seq);
+        callback(path, content, content === null ? undefined : doc.mtime, change.seq);
+        this.rememberPath(id, path);
     }
 
     async catchUp(
         since: string,
         callback: (path: string, content: string | null, mtime?: number) => void,
         onBatch?: (since: string, processed: number) => Promise<void>,
+        indexedPaths?: readonly string[],
     ): Promise<string> {
+        if (indexedPaths) {
+            this.indexedPathsById.clear();
+            for (const path of indexedPaths) {
+                this.rememberPath(await this.manipulator.path2id(path as FilePathWithPrefix), path);
+            }
+        }
         // Paginate _changes in batches to limit memory usage.
         const BATCH_SIZE = 50;
         const db = this.manipulator.liveSyncLocalDB.localDatabase;
@@ -154,25 +203,13 @@ export class Vault implements VaultBackend {
             const result = await db.changes({
                 include_docs: true,
                 since: currentSince,
-                selector: { type: { $ne: "leaf" } },
+                selector: FILE_CHANGES_SELECTOR,
                 live: false,
                 limit: BATCH_SIZE,
             });
 
             for (const change of result.results) {
-                if (!change.doc) continue;
-                const meta = change.doc as any;
-                // Skip chunks and system docs
-                if (meta.type === "leaf" || meta.type === "versioninfo") continue;
-                if (meta._id?.startsWith("h:") || meta._id?.startsWith("_")) continue;
-                // Decrypt path to check .md BEFORE fetching chunks (avoids loading large attachments)
-                let path = meta.path ?? "";
-                if (isPathProbablyObfuscated(path) && this.passphrase) {
-                    try { path = await decrypt(path, this.passphrase, false); } catch { continue; }
-                }
-                if (!path.endsWith(".md") && !meta.deleted) continue;
-                const doc = await this.manipulator.getByMeta(meta).catch(() => null);
-                if (doc) Vault.docToChange(doc, callback);
+                await this.processChange(change, callback);
             }
 
             totalProcessed += result.results.length;
@@ -194,12 +231,20 @@ export class Vault implements VaultBackend {
         return currentSince;
     }
 
-    watchChanges(callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void): void {
-        // catchUp already set this.manipulator.since to the right point
-        this.manipulator.beginWatch(
-            (doc, seq) => Vault.docToChange(doc, callback, seq),
-            Vault.mdFilter,
-        );
+    watchChanges(callback: NoteChangeCallback, indexedPaths?: () => readonly string[]): void {
+        if (this.stopWatching) return;
+        // Native beginWatch drops legacy entries and metadata-free tombstones.
+        // Consume the raw feed in order using the same decoder as catch-up.
+        this.stopWatching = watchInOrder<CouchChange>({
+            since: this.manipulator.since || "0",
+            open: (since) => this.manipulator.liveSyncLocalDB.localDatabase.changes({
+                include_docs: true, since, selector: FILE_CHANGES_SELECTOR, live: true,
+            }),
+            handle: async (change) => {
+                await this.processChange(change, callback, indexedPaths);
+                this.manipulator.since = String(change.seq);
+            },
+        });
     }
 
     private validatePath(path: string): void {
@@ -231,15 +276,18 @@ export class Vault implements VaultBackend {
             const entry = await this.manipulator.getVersionedEntry(path as FilePathWithPrefix);
             if (!entry) return { status: "error", code: await this.tombstoneExists(path) ? "RESTORE_REQUIRED" : "NOTE_NOT_FOUND" };
             if (entry.deleted || entry._deleted) return { status: "error", code: "RESTORE_REQUIRED" };
-            const conflicts = [...(entry._conflicts ?? []), ...(entry._deleted_conflicts ?? [])].sort();
+            // Only live sibling leaves require content reconciliation. CouchDB's
+            // deleted sibling leaves are revision history: LiveSync deliberately
+            // excludes them from its conflict inspector and resolver. Keep both
+            // kinds in the opaque version state below so any leaf-tree change
+            // still invalidates a stale mutation token.
+            const conflicts = [...(entry._conflicts ?? [])].sort();
             const leaves = [
                 { revision: entry._rev, deleted: false },
                 ...(entry._conflicts ?? []).map((revision: string) => ({ revision, deleted: false })),
                 ...(entry._deleted_conflicts ?? []).map((revision: string) => ({ revision, deleted: true })),
             ].sort((a, b) => a.revision.localeCompare(b.revision));
-            const bytes = entry.type === "newnote" || entry.datatype === "newnote"
-                ? new Uint8Array(decodeBinary(entry.data))
-                : new TextEncoder().encode(Array.isArray(entry.data) ? entry.data.join("") : String(entry.data ?? ""));
+            const bytes = decodeNoteBytes(entry);
             const note: VersionedNote = {
                 path,
                 bytes,
@@ -338,8 +386,7 @@ export class Vault implements VaultBackend {
             try {
                 const id = await this.manipulator.path2id(path as FilePathWithPrefix);
                 const post = await this.manipulator.readRevisionMetadata(id);
-                const branches = [...(post._conflicts ?? []), ...(post._deleted_conflicts ?? [])];
-                if (branches.length > 0) return { status: "committed_with_conflict", effects: [effect] };
+                if ((post._conflicts ?? []).length > 0) return { status: "committed_with_conflict", effects: [effect] };
             } catch {
                 return { status: "indeterminate", effects: [effect] };
             }
@@ -420,14 +467,14 @@ export class Vault implements VaultBackend {
 
     async getMetadata(path: string): Promise<NoteInfo | null> {
         this.validatePath(path);
-        const entry = await this.manipulator.get(path as FilePathWithPrefix);
-        if (!entry) return null;
-        const content = "data" in entry && Array.isArray(entry.data) ? entry.data.join("") : "";
+        const read = await this.readVersioned(path);
+        if (read.status !== "ok") return null;
+        const content = new TextDecoder().decode(read.note.bytes);
         return {
             path,
-            size: entry.size,
-            ctime: entry.ctime,
-            mtime: entry.mtime,
+            size: read.note.size,
+            ctime: read.note.ctime,
+            mtime: read.note.mtime,
             ...parseFrontmatterAndLinks(content),
         };
     }

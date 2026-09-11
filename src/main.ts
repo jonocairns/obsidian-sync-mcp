@@ -213,7 +213,7 @@ async function rebuildIndex() {
                     console.log(`  checkpoint: ${processed} changes processed, ${searchIndex.size} notes indexed.`);
                     await new Promise<void>((resolve) => setImmediate(resolve));
                     searchIndex.beginBatch();
-                });
+                }, searchIndex.listPaths());
                 searchIndex.commitBatch();
                 return result;
             } catch (error) {
@@ -340,7 +340,7 @@ if (VAULT_PATH) {
                 searchIndex.rollbackBatch();
                 throw new Error("Search index update failed.");
             }
-        });
+        }, () => searchIndex.listPaths());
         console.log("Watching CouchDB for LiveSync changes.");
     }).catch(() => {
         console.error("Failed to start CouchDB change watcher (details redacted).");
@@ -418,9 +418,10 @@ registerTools(server, vault, searchIndex, VAULT_NAME, READ_ONLY, WRITE_FOLDERS);
 async function shutdown() {
     console.log("Shutting down...");
     if (fsWatcher) fsWatcher.close();
+    // Drain the active CouchDB handler while its index is still writable.
+    await vault.close();
     searchIndex.close();
     if (auth) await auth.saveTokens();
-    await vault.close();
     process.exit(0);
 }
 process.on("SIGTERM", shutdown);
