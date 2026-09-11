@@ -69,7 +69,9 @@ export function searchIndexStoragePaths(baseDataDir: string, backendId: string, 
     };
 }
 
-const SCHEMA_VERSION = 2;
+// Includes indexed-content semantics, not only table layout. Rebuild indexes
+// that may contain base64 bodies, empty legacy entries, or missed tombstones.
+const SCHEMA_VERSION = 3;
 const CANDIDATE_LIMIT = 200;
 const EXACT_WEIGHT = 12;
 // Prefix matches exist for partial-word queries the FTS lanes cannot serve at

@@ -457,6 +457,31 @@ Provider recovery continues here with a resilience signal.`,
         assert.ok(names.some((name) => name.startsWith("old-schema.sqlite.schema-v1-") && name.endsWith(".bak")));
     });
 
+    it("rebuilds v2 indexed content and checkpoints while preserving a backup", async () => {
+        const path = join(tmpDir, "old-content.sqlite");
+        const old = await FullTextIndex.open(path);
+        old.update("binary.md", "YmFzZTY0IGJvZHk=", 123);
+        old.update("deleted.md", "stale tombstone entry", 123);
+        old.checkpoint = "already-skipped-deletion";
+        old.close();
+        const Database = (await import("better-sqlite3-multiple-ciphers")).default;
+        const raw = new Database(path);
+        raw.pragma("user_version = 2");
+        raw.close();
+        const rebuilt = await FullTextIndex.open(path);
+        try {
+            assert.equal(rebuilt.recreatedForSchemaMismatch, true);
+            assert.equal(rebuilt.size, 0);
+            assert.equal(rebuilt.checkpoint, "");
+        } finally { rebuilt.close(); }
+        const backup = (await readdir(tmpDir)).find((name) => name.startsWith("old-content.sqlite.schema-v2-") && name.endsWith(".bak"));
+        assert.ok(backup);
+        const saved = new Database(join(tmpDir, backup));
+        try {
+            assert.equal((saved.prepare("SELECT COUNT(*) AS count FROM notes").get() as { count: number }).count, 2);
+        } finally { saved.close(); }
+    });
+
     it("encrypts persisted note text and rejects the wrong key", async () => {
         const path = join(tmpDir, "encrypted.sqlite");
         const key = deriveFullTextIndexKey("correct horse battery staple", "encrypted-test");

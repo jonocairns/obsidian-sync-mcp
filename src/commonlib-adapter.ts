@@ -7,7 +7,7 @@ import { couchdbDocumentUrl } from "./commonlib-http.js";
 import { DirectFileManipulator } from "@vrtmrz/livesync-commonlib";
 import { createBlob, determineTypeFromBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import type {
-    DocumentID, EntryLeaf, FilePathWithPrefix, LoadedEntry, NewEntry, PlainEntry, SavingEntry,
+    DocumentID, EntryLeaf, FilePathWithPrefix, LoadedEntry, MetaEntry, NewEntry, PlainEntry, SavingEntry,
 } from "@vrtmrz/livesync-commonlib/compat/common/types";
 
 type FileInfo = Parameters<DirectFileManipulator["put"]>[2];
@@ -111,8 +111,13 @@ export class UpstreamAdapter extends DirectFileManipulator {
     }
 
     async getVersionedEntry(path: FilePathWithPrefix): Promise<false | (LoadedEntry & RevisionMetadata)> {
-        const metadata = await this.readRevisionMetadata(await this.path2id(path));
-        const entry = await this.liveSyncLocalDB.getDBEntry(path, { rev: metadata._rev }, false, true, true);
+        const id = await this.path2id(path);
+        const metadata = await this.readRevisionMetadata(id);
+        // The path-based Commonlib loader normalizes legacy inline entries into
+        // empty plain entries. Load the exact revision's original representation
+        // through Commonlib's decrypted raw API and metadata-based decoder.
+        const raw = await this.liveSyncLocalDB.getRaw(id, { rev: metadata._rev });
+        const entry = await this.liveSyncLocalDB.getDBEntryFromMeta({ ...raw, path: "path" in raw ? raw.path : path } as MetaEntry, false, true);
         if (!entry) throw new Error("Could not load the pinned CouchDB revision");
         // Pin decoding to the same revision as the conflict snapshot. A later
         // update cannot mix new content with the old revision's version token.
