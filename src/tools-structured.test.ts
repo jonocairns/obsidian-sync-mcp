@@ -490,12 +490,132 @@ it("rejects non-ISO modified_after in list_notes instead of applying a silent cu
         // and "2024-02-30" would roll over to 2024-03-01.
         for (const modified_after of ["1", "0", "2024-02-30", "2026-3-25", "bad date"]) {
             const output = await listNotes.execute({ modified_after }, {});
-            assert.match(output, /^Invalid date format/, modified_after);
+            assert.equal(output.structuredContent.error.code, "INVALID_LIST_INPUT", modified_after);
         }
         const filtered = await listNotes.execute({ modified_after: "2025-01-01" }, {});
-        assert.match(filtered, /new\.md/);
-        assert.doesNotMatch(filtered, /old\.md/);
+        assert.match(filtered.content[0].text, /new\.md/);
+        assert.doesNotMatch(filtered.content[0].text, /old\.md/);
     } finally {
         index.close();
     }
+});
+
+for (const sqlite of [false, true]) it(`listing contract matrix (${sqlite ? "SQLite" : "memory"})`, async () => {
+    const { FullTextIndex } = await import("./full-text-search.js");
+    const { structuredListResultSchema } = await import("./list-contract.js");
+    const { Ajv } = await import("ajv");
+    const { default: addFormats } = await import("ajv-formats");
+    const index = new SearchIndex(sqlite ? await FullTextIndex.open(":memory:") : undefined);
+    const vault = backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] });
+    const candidates = [{ path: "fallback.md", mtime: 0 }, { path: "missing/note.md", mtime: 1 }];
+    vault.listNotesWithMtime = async (folder) => candidates.filter(n => folder === undefined || (folder === "" ? !n.path.includes("/") : n.path.startsWith(folder + "/")));
+    vault.listNotes = async () => candidates.map(n => n.path);
+    const tools = toolsFor(vault, index);
+    const ajv = new Ajv(); addFormats(ajv);
+    const names = ["list_notes", "list_folders", "list_tags"];
+    const validators = new Map(names.map(name => [name, ajv.compile(tools.get(name).outputSchema["~standard"].jsonSchema.output())]));
+    const call = async (name: string, args = {}) => {
+        const out = await tools.get(name).execute(args, {});
+        assert.ok(validators.get(name)!(out.structuredContent));
+        assert.ok(structuredListResultSchema.safeParse(out.structuredContent).success);
+        assert.doesNotMatch(JSON.stringify(out), /private|Vault is empty/);
+        if (out.structuredContent.status === "ok") for (const other of names.filter(n => n !== name)) assert.equal(validators.get(other)!(out.structuredContent), false);
+        return out;
+    };
+    try {
+        assert.equal((await call("list_notes")).structuredContent.result.source, "vault");
+        assert.equal((await call("list_folders")).structuredContent.result.source, "vault");
+        assert.deepEqual((await call("list_tags")).structuredContent.result.entries, []);
+        assert.equal((await call("list_notes", { tag: "project" })).structuredContent.result.total, 0);
+        index.update("nested/only.md", "#project", 1);
+        const rootFallback = (await call("list_notes", { folder: "" })).structuredContent.result;
+        assert.equal(rootFallback.source, "vault");
+        assert.deepEqual(rootFallback.entries.map((n: any) => n.path), ["fallback.md"]);
+        index.clear();
+        index.update("single.md", "---\ntags: [project, Project]\n---");
+        assert.deepEqual((await call("list_tags")).structuredContent.result.entries, [{ tag: "project", count: 1 }]);
+        index.update("second.md", "#Project");
+        assert.deepEqual((await call("list_tags")).structuredContent.result.entries, [{ tag: "Project", count: 2 }]);
+        index.remove("second.md");
+        assert.deepEqual((await call("list_tags")).structuredContent.result.entries, [{ tag: "project", count: 1 }]);
+        index.clear();
+        index.update("z.md", "---\ntags: [project, Project]\n---", 1000);
+        index.update("a.md", "#Project", 1000);
+        index.update("(root)/child.md", "#project", 0);
+        index.update("parent/deep/child.md", "#other", 2);
+        assert.deepEqual((await call("list_tags")).structuredContent.result.entries, [{ tag: "Project", count: 3 }, { tag: "other", count: 1 }]);
+        for (const t of (await call("list_tags")).structuredContent.result.entries) {
+            const result = (await call("list_notes", { tag: t.tag, limit: 1 })).structuredContent.result;
+            assert.equal(result.total, t.count);
+            assert.equal(result.truncated, t.count > 1);
+        }
+        assert.equal((await call("list_notes", { tag: "PROJECT" })).structuredContent.result.total, 3);
+        assert.deepEqual((await call("list_notes", { sort_by: "name" })).structuredContent.result.entries.map((n: any) => n.path),
+            ["(root)/child.md", "a.md", "parent/deep/child.md", "z.md"]);
+
+        assert.equal((await call("list_notes", { folder: "" })).structuredContent.result.total, 2);
+        assert.equal((await call("list_notes", { folder: "parent" })).structuredContent.result.total, 1);
+        assert.equal((await call("list_notes", { folder: "(root)" })).structuredContent.result.entries[0].modified, null);
+        assert.equal((await call("list_notes", { folder: "missing" })).structuredContent.result.source, "vault");
+        assert.equal((await call("list_notes", { name: "DEEP" })).structuredContent.result.total, 1);
+        assert.equal((await call("list_notes", { modified_after: "1970-01-01T00:00:01Z" })).structuredContent.result.total, 2);
+        for (const filter of [{ name: "absent" }, { tag: "absent" }, { modified_after: "2099-01-01" }]) {
+            assert.match((await call("list_notes", filter)).content[0].text, /No notes match these filters/);
+        }
+        assert.deepEqual((await call("list_notes", { sort_by: "modified" })).structuredContent.result.entries.map((n: any) => n.path), ["a.md", "z.md", "parent/deep/child.md", "(root)/child.md"]);
+        assert.deepEqual((await call("list_folders")).structuredContent.result.entries, [
+            { path: "", directNoteCount: 2 }, { path: "(root)", directNoteCount: 1 },
+            { path: "parent", directNoteCount: 0 }, { path: "parent/deep", directNoteCount: 1 },
+        ]);
+        for (const state of ["ready", "building", "catching_up", "error"] as const) for (const total of [undefined, 4]) {
+            index.setBuildStatus(state, 1, total, "private status");
+            for (const name of names) assert.equal((await call(name)).structuredContent.notices.length, state === "ready" ? 0 : 1);
+        }
+        for (let i = 0; i < 110; i++) index.update(`bulk/${i}.md`, "#bulk");
+        const capped = (await call("list_notes")).structuredContent.result;
+        assert.equal(capped.returnedCount, 100); assert.equal(capped.total, 114); assert.equal(capped.truncated, true);
+        const params = tools.get("list_notes").parameters["~standard"];
+        for (const limit of [1, 1000, "2"]) {
+            const parsed = await params.validate({ limit });
+            assert.equal((await call("list_notes", parsed.value)).structuredContent.result.returnedCount, Math.min(Number(limit), 114));
+        }
+        for (const limit of [-1, 0, 1.5, 1001]) assert.ok((await params.validate({ limit })).issues);
+        for (const modified_after of ["private invalid date", "", "2024-02-30"]) assert.equal((await call("list_notes", { modified_after })).structuredContent.error.code, "INVALID_LIST_INPUT");
+        index.listWithMtime = () => [{ path: "private.md", mtime: Infinity }];
+        assert.equal((await call("list_notes")).structuredContent.error.code, "LIST_FAILED");
+        index.listAllTags = () => [{ tag: "private", count: -1 }];
+        assert.equal((await call("list_tags")).structuredContent.error.code, "LIST_FAILED");
+        for (const method of ["listWithMtime", "listPaths", "listAllTags"] as const) index[method] = () => { throw Error("private backend"); };
+        for (const name of names) assert.equal((await call(name)).structuredContent.error.code, "LIST_FAILED");
+        index.listWithMtime = () => []; index.listPaths = () => [];
+        vault.listNotesWithMtime = vault.listNotes = async () => { throw Error("private vault"); };
+        for (const name of ["list_notes", "list_folders"]) assert.equal((await call(name)).structuredContent.error.code, "LIST_FAILED");
+    } finally { index.close(); }
+});
+
+it("redacts listing execution and output debug logs", async () => {
+    const index = new SearchIndex();
+    const tools = toolsFor(backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] }), index);
+    const errors: unknown[][] = [];
+    const original = console.error;
+    console.error = (...args) => { errors.push(args); };
+    try {
+        await tools.get("list_notes").execute({ modified_after: "private" });
+        assert.deepEqual(errors, []);
+        index.listWithMtime = () => { throw Error("private credentials"); };
+        index.listPaths = () => { throw Error("private credentials"); };
+        index.listAllTags = () => { throw Error("private credentials"); };
+        for (const name of ["list_notes", "list_folders", "list_tags"]) await tools.get(name).execute({});
+        index.listWithMtime = () => [{ path: "private", mtime: NaN }];
+        index.listAllTags = () => [{ tag: "private", count: -1 }];
+        for (const name of ["list_notes", "list_tags"]) await tools.get(name).execute({});
+        assert.deepEqual(errors, process.env.LOG_LEVEL === "debug" ? [
+            ["[tool] list_notes failed (execution; details redacted)"],
+            ["[tool] list_folders failed (execution; details redacted)"],
+            ["[tool] list_tags failed (execution; details redacted)"],
+            ["[tool] list_notes failed (output; details redacted)"],
+            ["[tool] list_tags failed (output; details redacted)"],
+        ] : []);
+        assert.doesNotMatch(JSON.stringify(errors), /private|credentials/);
+    } finally { console.error = original; index.close(); }
 });

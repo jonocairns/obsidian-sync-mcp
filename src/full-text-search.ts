@@ -630,7 +630,7 @@ export class FullTextIndex {
 
     listWithMtime(folder?: string): Array<{ path: string; mtime: number }> {
         const parameters: string[] = [];
-        const where = folder ? "WHERE path LIKE ? ESCAPE '\\'" : "";
+        const where = folder === "" ? "WHERE instr(path, '/') = 0" : folder ? "WHERE path LIKE ? ESCAPE '\\'" : "";
         if (folder) parameters.push(`${escapeLike(folder.replace(/[\\/]+$/, ""))}/%`);
         return this.statement(`SELECT path, mtime FROM notes ${where} ORDER BY path`).all(...parameters)
             .map((row: any) => ({ path: String(row.path), mtime: Number(row.mtime) }));

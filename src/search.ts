@@ -105,7 +105,7 @@ export class SearchIndex {
         const prefix = folder && !folder.endsWith("/") ? `${folder}/` : folder;
         return [...this.knownPaths]
             .filter((path) => path.endsWith(".md"))
-            .filter((path) => !prefix || path.startsWith(prefix))
+            .filter((path) => folder === "" ? !path.includes("/") : !prefix || path.startsWith(prefix))
             .map((path) => ({ path, mtime: this.mtimes.get(path) ?? 0 }))
             .sort((left, right) => left.path.localeCompare(right.path));
     }
@@ -129,13 +129,23 @@ export class SearchIndex {
     }
     listAllTags(): Array<{ tag: string; count: number }> {
         if (this.fullTextIndex) return this.fullTextIndex.listAllTags();
-        const counts = new Map<string, number>();
+        const counts = new Map<string, { tag: string; count: number }>();
         for (const noteTags of this.tags.values()) {
-            for (const tag of noteTags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+            const seen = new Set<string>();
+            for (const tag of noteTags) {
+                const normalized = tag.toLocaleLowerCase("en-US");
+                if (seen.has(normalized)) continue;
+                seen.add(normalized);
+                const group = counts.get(normalized);
+                // SQLite retains the first spelling per note, then min(tag) under BINARY collation.
+                if (group) {
+                    group.count++;
+                    if (Buffer.compare(Buffer.from(tag), Buffer.from(group.tag)) < 0) group.tag = tag;
+                } else counts.set(normalized, { tag, count: 1 });
+            }
         }
-        return [...counts.entries()]
-            .map(([tag, count]) => ({ tag, count }))
-            .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag));
+        return [...counts.values()].sort((left, right) => right.count - left.count ||
+            Buffer.compare(Buffer.from(left.tag), Buffer.from(right.tag)));
     }
 
     clear(): void {

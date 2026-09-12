@@ -1,3 +1,5 @@
+import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT } from "./list-limits.js";
+import { listSchemaVersion, listError, toListToolResult, structuredNotesOutputSchema, structuredFoldersOutputSchema, structuredTagsOutputSchema } from "./list-contract.js";
 import { MAX_SEARCH_LIMIT } from "./search-limits.js";
 import { InvalidSearchInputError } from "./full-text-search.js";
 import { searchSchemaVersion, structuredSearchOutputSchema, searchError, toSearchToolResult } from "./search-contract.js";
@@ -80,9 +82,9 @@ export function formatIndexStatusNotice(status: SearchBuildStatus): string {
         : `⚠ Search index is catching up${progress}. Index-backed results, counts, and backlinks may omit recent changes.`;
 }
 
-function withIndexStatusNotice(value: string, searchIndex: SearchIndex): string {
+function indexStatusNotices(searchIndex: SearchIndex): string[] {
     const notice = formatIndexStatusNotice(searchIndex.status);
-    return notice ? `${notice}\n\n${value}` : value;
+    return notice ? [notice] : [];
 }
 
 export function registerTools(
@@ -281,12 +283,12 @@ export function registerTools(
     server.addTool({
         name: "list_notes",
         annotations: { title: "List notes", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description: "List markdown notes in the vault with modification timestamps. Examples: list_notes(sort_by='modified', limit=10) for 10 most recent notes. list_notes(name='meeting') to find notes by name. list_notes(folder='daily') for a specific folder. list_notes(tag='project') for notes with a specific tag. Returns up to 100 notes by default.",
+        description: "List markdown notes in the vault with modification timestamps. Examples: list_notes(sort_by='modified', limit=10) for 10 most recent notes. list_notes(name='meeting') to find notes by name. list_notes(folder='daily') for a specific folder. list_notes(tag='project') for notes with a specific tag. Returns structured entries, candidate total and truncation, plus Markdown. Default 100; maximum 1000. Tag filtering uses indexed metadata even during vault fallback.",
         parameters: z.object({
             folder: z
                 .string()
                 .optional()
-                .describe("Folder to filter by, e.g. 'daily' or 'projects'. Omit for all notes."),
+                .describe("Folder to filter by, e.g. 'daily' or 'projects'. Omit for all notes; an empty string selects root-level notes only."),
             name: z
                 .string()
                 .optional()
@@ -304,49 +306,41 @@ export function registerTools(
                 .optional()
                 .describe("Only include notes modified after this ISO date, e.g. '2026-03-25' or '2026-03-25T10:00'."),
             limit: z.coerce
-                .number()
+                .number().int().min(1).max(MAX_LIST_LIMIT)
                 .optional()
-                .describe("Max number of notes to return. Default 100."),
+                .describe("Max number of notes to return. Default 100; maximum 1000. No pagination."),
         }),
+        outputSchema: structuredNotesOutputSchema,
         execute: async ({ folder, name, tag, sort_by, modified_after, limit }) => {
-            // Use search index (works with encrypted vaults), fall back to vault
-            let notes = searchIndex.listWithMtime(folder);
-            if (notes.length === 0) {
-                notes = await vault.listNotesWithMtime(folder);
+            const cutoff = modified_after === undefined ? undefined : parseIsoDate(modified_after);
+            if (cutoff === null) return toListToolResult(listError("INVALID_LIST_INPUT"));
+            let failureStage: "execution" | "output" = "execution";
+            try {
+                let source: "index" | "vault" = "index";
+                let notes = searchIndex.listWithMtime(folder);
+                if (notes.length === 0) {
+                    source = "vault";
+                    notes = await vault.listNotesWithMtime(folder);
+                }
+                if (name) notes = notes.filter((n) => n.path.toLowerCase().includes(name.toLowerCase()));
+                if (tag) notes = notes.filter((n) => searchIndex.getTags(n.path).some(
+                    (value) => value.toLocaleLowerCase("en-US") === tag.toLocaleLowerCase("en-US"),
+                ));
+                if (cutoff !== undefined) notes = notes.filter((n) => n.mtime >= cutoff);
+                notes.sort((a, b) => (sort_by === "modified" ? b.mtime - a.mtime : 0) || a.path.localeCompare(b.path));
+                const notices = indexStatusNotices(searchIndex);
+                failureStage = "output";
+                const entries = notes.slice(0, limit ?? DEFAULT_LIST_LIMIT).map((n) => ({
+                    path: n.path, modified: n.mtime === 0 ? null : new Date(n.mtime).toISOString(),
+                    deepLink: makeDeepLink(vaultName, n.path),
+                }));
+                return toListToolResult({ schemaVersion: listSchemaVersion, status: "ok", notices,
+                    result: { kind: "notes", source, entries, returnedCount: entries.length,
+                        total: notes.length, truncated: entries.length < notes.length } });
+            } catch {
+                if (debugLogging) console.error(`[tool] list_notes failed (${failureStage}; details redacted)`);
+                return toListToolResult(listError("LIST_FAILED"));
             }
-            if (name) {
-                const lower = name.toLowerCase();
-                notes = notes.filter((n) => n.path.toLowerCase().includes(lower));
-            }
-            if (tag) {
-                notes = notes.filter((n) => searchIndex.getTags(n.path).includes(tag));
-            }
-            if (modified_after) {
-                const cutoff = parseIsoDate(modified_after);
-                if (cutoff === null) return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
-                notes = notes.filter((n) => n.mtime >= cutoff);
-            }
-            if (notes.length === 0) {
-                const empty = searchIndex.status.state === "ready"
-                    ? (folder ? `No notes found in folder: ${folder}` : "Vault is empty.")
-                    : (folder ? `No indexed notes found in folder: ${folder}` : "No indexed notes are available yet.");
-                return withIndexStatusNotice(empty, searchIndex);
-            }
-            if (sort_by === "modified") {
-                notes.sort((a, b) => b.mtime - a.mtime);
-            }
-            const cap = limit ?? 100;
-            const total = notes.length;
-            const capped = notes.slice(0, cap);
-            const lines = capped.map((n) => {
-                const deepLink = makeDeepLink(vaultName, n.path);
-                const date = n.mtime ? new Date(n.mtime).toISOString().slice(0, 16) : "";
-                return `- ${date} [${n.path}](${deepLink})`;
-            });
-            if (total > cap) {
-                lines.push(`\n... and ${total - cap} more. Use a folder filter or limit to narrow results.`);
-            }
-            return withIndexStatusNotice(lines.join("\n"), searchIndex);
         },
     });
 
@@ -421,61 +415,57 @@ export function registerTools(
         name: "list_folders",
         annotations: { title: "List folders", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description:
-            "List all folders in the vault. Use this to discover folder names before writing or listing notes. Returns the folder tree with note counts.",
+            "List folders derived from index or fallback vault paths, including ancestors. Returns structured entries with immediate-child directNoteCount and Markdown. Root has path an empty string.",
         parameters: z.object({}),
+        outputSchema: structuredFoldersOutputSchema,
         execute: async () => {
-            let paths = searchIndex.listPaths();
-            if (paths.length === 0) {
-                paths = await vault.listNotes();
-            }
-            const folders = new Map<string, number>();
-            for (const p of paths) {
-                const lastSlash = p.lastIndexOf("/");
-                if (lastSlash === -1) {
-                    folders.set("(root)", (folders.get("(root)") ?? 0) + 1);
-                } else {
-                    const folder = p.slice(0, lastSlash);
+            let failureStage: "execution" | "output" = "execution";
+            try {
+                let source: "index" | "vault" = "index";
+                let paths = searchIndex.listPaths();
+                if (paths.length === 0) { source = "vault"; paths = await vault.listNotes(); }
+                const folders = new Map<string, number>();
+                for (const path of paths) {
+                    const slash = path.lastIndexOf("/");
+                    const folder = slash === -1 ? "" : path.slice(0, slash);
                     folders.set(folder, (folders.get(folder) ?? 0) + 1);
-                    // Ensure all parent folders appear in the list
                     let parent = folder;
                     while (parent.includes("/")) {
                         parent = parent.slice(0, parent.lastIndexOf("/"));
                         if (!folders.has(parent)) folders.set(parent, 0);
                     }
                 }
+                const notices = indexStatusNotices(searchIndex);
+                failureStage = "output";
+                const entries = [...folders].sort((a, b) => a[0].localeCompare(b[0]))
+                    .map(([path, directNoteCount]) => ({ path, directNoteCount }));
+                return toListToolResult({ schemaVersion: listSchemaVersion, status: "ok", notices,
+                    result: { kind: "folders", source, entries } });
+            } catch {
+                if (debugLogging) console.error(`[tool] list_folders failed (${failureStage}; details redacted)`);
+                return toListToolResult(listError("LIST_FAILED"));
             }
-            if (folders.size === 0) {
-                const empty = searchIndex.status.state === "ready"
-                    ? "Vault is empty."
-                    : "No indexed folders are available yet.";
-                return withIndexStatusNotice(empty, searchIndex);
-            }
-            const sorted = [...folders.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-            return withIndexStatusNotice(
-                sorted.map(([f, count]) => `- ${f} (${count} notes)`).join("\n"),
-                searchIndex,
-            );
         },
     });
 
     server.addTool({
         name: "list_tags",
         annotations: { title: "List tags", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        description:
-            "List all tags used in the vault, sorted by frequency. Use this to discover tags before filtering with list_notes.",
+        description: "List indexed tags, grouped case-insensitively and sorted by note count then tag name. Use these labels to filter list_notes. Each note counts once per normalized tag.",
         parameters: z.object({}),
+        outputSchema: structuredTagsOutputSchema,
         execute: async () => {
-            const tags = searchIndex.listAllTags();
-            if (tags.length === 0) {
-                const empty = searchIndex.status.state === "ready"
-                    ? "No tags found in the vault."
-                    : "No indexed tags are available yet.";
-                return withIndexStatusNotice(empty, searchIndex);
+            let failureStage: "execution" | "output" = "execution";
+            try {
+                const entries = searchIndex.listAllTags();
+                const notices = indexStatusNotices(searchIndex);
+                failureStage = "output";
+                return toListToolResult({ schemaVersion: listSchemaVersion, status: "ok", notices,
+                    result: { kind: "tags", source: "index", entries } });
+            } catch {
+                if (debugLogging) console.error(`[tool] list_tags failed (${failureStage}; details redacted)`);
+                return toListToolResult(listError("LIST_FAILED"));
             }
-            return withIndexStatusNotice(
-                tags.map(({ tag, count }) => `- #${tag} (${count} notes)`).join("\n"),
-                searchIndex,
-            );
         },
     });
 

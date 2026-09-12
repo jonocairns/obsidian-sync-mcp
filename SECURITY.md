@@ -63,6 +63,7 @@ The server implements a self-contained OAuth 2.1 authorization server with PKCE.
 
 - **E2E encryption supported** — when `COUCHDB_PASSPHRASE` is set, the server decrypts and encrypts vault data using the same scheme as Self-hosted LiveSync. Data is encrypted at rest in CouchDB.
 - **Text only** — binary attachments are not exposed through MCP tools, reducing the attack surface.
+- **Listing result cap** — `list_notes` accepts 1–1,000 entries (default 100), rejecting invalid limits. This bounds entry count, not bytes or backend enumeration cost. Folder and tag listings remain uncapped. Listing execution/output failures use fixed public errors and redacted stage-only debug logs.
 - **Search result cap** — search returns at most 50 ranked hits, including indexed title, aliases, tags, and snippets. This bounds hit count, not response bytes or exhaustive coverage. Search execution errors use fixed public messages without backend details.
 - **Search content is persisted** — full-text search stores note paths, titles,
   aliases, tags, links, modification times, content hashes, heading-level note

@@ -279,6 +279,26 @@ describe("E2E: structured search", () => {
                 return parseSSE(await response.text()).result;
             };
             const listed = await call("tools/list", {});
+            for (const [name, kind] of [["list_notes", "notes"], ["list_folders", "folders"], ["list_tags", "tags"]]) {
+                const ajv = new Ajv(); addFormats(ajv);
+                const validate = ajv.compile(listed.tools.find((tool: any) => tool.name === name).outputSchema);
+                const output = await call("tools/call", { name, arguments: name === "list_notes" ? { limit: 1 } : {} });
+                assert.ok(validate(output.structuredContent), JSON.stringify(validate.errors));
+                assert.equal(output.structuredContent.result.kind, kind);
+                assert.ok(output.structuredContent.result.entries.length > 0);
+                if (name === "list_notes") {
+                    assert.equal(output.structuredContent.result.returnedCount, 1);
+                    assert.equal(output.structuredContent.result.truncated, true);
+                    for (const args of [{ name: "nonexistentxyzzy" }, { modified_after: "private-invalid" }]) {
+                        const response = await call("tools/call", { name, arguments: args });
+                        assert.ok(validate(response.structuredContent));
+                        if (args.name) assert.equal(response.structuredContent.result.total, 0);
+                        else assert.equal(response.structuredContent.error.code, "INVALID_LIST_INPUT");
+                        assert.doesNotMatch(JSON.stringify(response), /private-invalid|Vault is empty/);
+                    }
+                }
+            }
+
             const schema = listed.tools.find((tool: any) => tool.name === "search_notes").outputSchema;
             assert.equal(schema.type, "object");
             const ajv = new Ajv();

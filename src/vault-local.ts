@@ -344,7 +344,7 @@ export class LocalVault implements VaultBackend {
         const searchDir = folder ? await this.safeFolder(folder) : this.root;
         const entries: string[] = [];
         try {
-            for await (const entry of glob("**/*.md", { cwd: searchDir })) {
+            for await (const entry of glob(folder === "" ? "*.md" : "**/*.md", { cwd: searchDir })) {
                 const full = folder ? `${folder}${entry}` : entry;
                 if (full.startsWith(".obsidian/") || full.includes("/.obsidian/")) continue;
                 entries.push(full);
