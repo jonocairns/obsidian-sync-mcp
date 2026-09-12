@@ -380,3 +380,122 @@ describe("structured mutation outcomes", () => {
         assert.equal("result" in result.structuredContent, false);
     });
 });
+
+it("serves schema-valid indexed search without vault reads, preserving limits and notices", async () => {
+    const { FullTextIndex } = await import("./full-text-search.js");
+    const { structuredSearchResultSchema } = await import("./search-contract.js");
+    const { Ajv } = await import("ajv");
+    const { default: addFormats } = await import("ajv-formats");
+    const db = await FullTextIndex.open(":memory:");
+    const index = new SearchIndex(db);
+    try {
+        for (let i = 0; i < 55; i++) index.update(`folder/${i}.md`, "---\naliases: [Alternate]\ntags: [topic]\n---\n# Example\n## Detail\nsearchable content", 1000);
+        index.update("other.md", "unrelated");
+        const vault = backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] });
+        for (const key of ["readNote", "readVersioned", "getMetadata", "listNotes", "listNotesWithMtime"] as const) {
+            vault[key] = async () => { throw new Error("unexpected vault access"); };
+        }
+        const tool = toolsFor(vault, index).get("search_notes");
+        const schema = tool.outputSchema["~standard"].jsonSchema.output();
+        assert.equal(schema.type, "object");
+        const ajv = new Ajv();
+        addFormats(ajv);
+        const validate = ajv.compile(schema);
+        const callSearch = async (args: Record<string, unknown>) => {
+            const output = await tool.execute(args, {});
+            assert.ok(validate(output.structuredContent), JSON.stringify(validate.errors));
+            assert.ok(structuredSearchResultSchema.safeParse(output.structuredContent).success);
+            return output;
+        };
+        const normal = await callSearch({ query: "searchable" });
+        assert.equal(normal.isError, false);
+        assert.equal(normal.structuredContent.result.returnedCount, 10);
+        const hit = normal.structuredContent.result.hits[0];
+        assert.deepEqual({ title: hit.title, aliases: hit.aliases, tags: hit.tags }, { title: "Example", aliases: ["Alternate"], tags: ["topic"] });
+        assert.equal(hit.modified, "1970-01-01T00:00:01.000Z");
+        assert.equal(hit.heading, "Detail");
+        assert.equal(hit.matchedBy, "passage");
+        assert.match(normal.content[0].text, /obsidian:\/\/open/);
+        assert.equal((await callSearch({ query: "searchable", limit: 50 })).structuredContent.result.returnedCount, 50);
+        for (const filters of [{ folder: "missing" }, { tag: "missing" }, { modified_after: "2026-01-01" }]) {
+            assert.equal((await callSearch({ query: "searchable", ...filters })).structuredContent.result.returnedCount, 0);
+        }
+        assert.equal((await callSearch({ query: "unrelated" })).structuredContent.result.hits[0].modified, null);
+        // "1" and "2024-02-30" are accepted by new Date() — they must not become a silent cutoff.
+        for (const modified_after of ["bad date", "1", "2024-02-30", "2026-3-25"]) {
+            const error = await callSearch({ query: "searchable", modified_after });
+            assert.equal(error.isError, true, modified_after);
+            assert.equal(error.structuredContent.error.code, "INVALID_SEARCH_INPUT", modified_after);
+        }
+        {
+            const error = await callSearch({ query: "!!!" });
+            assert.equal(error.isError, true);
+            assert.equal(error.structuredContent.error.code, "INVALID_SEARCH_INPUT");
+        }
+        for (const state of ["building", "catching_up", "error"] as const) {
+            index.setBuildStatus(state, 1, 2, "private backend details");
+            const output = await callSearch({ query: "searchable" });
+            assert.equal(output.structuredContent.notices.length, 1);
+            assert.ok(output.content[0].text.startsWith(output.structuredContent.notices[0]));
+            assert.doesNotMatch(JSON.stringify(output), /private backend/);
+        }
+        index.searchNotes = () => { throw new Error("SQL secret /private/vault"); };
+        const error = await callSearch({ query: "searchable" });
+        assert.equal(error.structuredContent.error.code, "SEARCH_FAILED");
+        assert.equal(error.isError, true);
+        assert.doesNotMatch(JSON.stringify(error), /SQL|secret|private/);
+        for (const limit of [0, 51, 1.5]) assert.ok((await tool.parameters["~standard"].validate({ query: "x", limit })).issues);
+    } finally { index.close(); }
+});
+
+it("logs only sanitized search failure stages when debug logging is enabled", async () => {
+    const { FullTextIndex } = await import("./full-text-search.js");
+    const index = new SearchIndex(await FullTextIndex.open(":memory:"));
+    const errors: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args); };
+    try {
+        const tool = toolsFor(backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] }), index).get("search_notes");
+        await tool.execute({ query: "!!!" }, {});
+        assert.deepEqual(errors, []);
+        index.searchNotes = () => { throw new Error("SQL credentials /private/vault"); };
+        const execution = await tool.execute({ query: "private query" }, {});
+        assert.equal(execution.structuredContent.error.code, "SEARCH_FAILED");
+        // Invalid indexed output must be distinguishable in logs without leaking Zod issues.
+        index.searchNotes = () => [{ path: "private-note.md", mtime: 0, rank: NaN,
+            matchedBy: "passage", snippet: "secret snippet", title: "private title", aliases: [], tags: [] }];
+        const output = await tool.execute({ query: "private query" }, {});
+        assert.equal(output.structuredContent.error.code, "SEARCH_FAILED");
+        assert.deepEqual(errors, process.env.LOG_LEVEL === "debug" ? [
+            ["[tool] search_notes failed (execution; details redacted)"],
+            ["[tool] search_notes failed (output; details redacted)"],
+        ] : []);
+        assert.doesNotMatch(JSON.stringify({ errors, execution, output }), /SQL|credentials|private|secret snippet|NaN/);
+    } finally {
+        console.error = originalError;
+        index.close();
+    }
+});
+
+it("rejects non-ISO modified_after in list_notes instead of applying a silent cutoff", async () => {
+    const notes = [
+        { path: "old.md", mtime: Date.UTC(2024, 0, 1) },
+        { path: "new.md", mtime: Date.UTC(2026, 0, 1) },
+    ];
+    const vault = { ...backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] }), listNotesWithMtime: async () => notes };
+    const index = new SearchIndex();
+    try {
+        const listNotes = toolsFor(vault, index).get("list_notes");
+        // new Date() accepts all of these; "1" would silently cut off at year 2001
+        // and "2024-02-30" would roll over to 2024-03-01.
+        for (const modified_after of ["1", "0", "2024-02-30", "2026-3-25", "bad date"]) {
+            const output = await listNotes.execute({ modified_after }, {});
+            assert.match(output, /^Invalid date format/, modified_after);
+        }
+        const filtered = await listNotes.execute({ modified_after: "2025-01-01" }, {});
+        assert.match(filtered, /new\.md/);
+        assert.doesNotMatch(filtered, /old\.md/);
+    } finally {
+        index.close();
+    }
+});

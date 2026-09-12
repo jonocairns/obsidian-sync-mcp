@@ -234,7 +234,57 @@ status is one of `ok`, `conflict`, `committed_with_conflict`, `partial`,
 `indeterminate`, or `error`, with stable error codes, explicit effects, and
 recovery guidance. Note-identifying successful results include a separate
 [Obsidian deep link](https://help.obsidian.md/Extending+Obsidian/Obsidian+URI).
-Listing and search contracts remain unchanged in 0.9.
+Listing contracts remain text-only. `search_notes` returns Markdown plus validated
+`structuredContent` under its own strict output schema (`schemaVersion: "1.0.0"`,
+independent of the package and single-note schema versions).
+
+For example, `search_notes({"query":"provider", "folder":"work", "limit":10})`
+returns an envelope shaped like:
+
+```json
+{
+  "schemaVersion": "1.0.0",
+  "status": "ok",
+  "result": {
+    "hits": [{
+      "path": "work/provider.md",
+      "rank": 0.25,
+      "matchedBy": "passage",
+      "snippet": "A **provider** example …",
+      "heading": "Details",
+      "breadcrumb": "Provider > Details",
+      "modified": "2026-09-12T00:00:00.000Z",
+      "deepLink": "obsidian://open?vault=MyVault&file=work%2Fprovider",
+      "title": "Provider",
+      "aliases": [],
+      "tags": []
+    }],
+    "returnedCount": 1
+  },
+  "notices": []
+}
+```
+
+`rank` is the existing numeric reciprocal-rank-fusion score (higher first),
+not an ordinal position. `matchedBy` is the lane supplying the primary snippet:
+`exact`, `metadata`, or `passage`; it does not explain every ranking contribution.
+Snippets retain Markdown `**` match highlights and ellipses. Heading and breadcrumb
+are omitted when unavailable; `modified` is an indexed ISO timestamp, or `null`
+when the index has no timestamp. Title is the first H1 with filename fallback,
+not YAML `title`. Aliases and tags come from existing indexed metadata.
+
+Results remain a bounded ranked selection: default 10, maximum 50, with unchanged
+query modes and folder/tag/date filters. `returnedCount` equals `hits.length`,
+not a total match count. An empty result is successful (`hits: []`,
+`returnedCount: 0`); missing results do not prove absence. Hits are discovery
+information, not mutation preconditions: read a fresh authoritative note version
+before editing. `notices` copies existing index-status notices without stronger
+freshness guarantees.
+
+Handled errors have `status: "error"`, `error: {code, message}`, and MCP
+`isError: true`. Codes distinguish `INVALID_SEARCH_INPUT` (query/date) from
+`SEARCH_FAILED` (execution); messages do not disclose backend details.
+Framework validation still rejects invalid parameter types, modes, and limits.
 
 > "Add a bullet point to my daily note." "Find my notes about the MCP server and fix the typo in the second one."
 

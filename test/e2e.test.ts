@@ -1,3 +1,5 @@
+import { Ajv } from "ajv";
+import addFormats from "ajv-formats";
 /**
  * E2E test: starts server in local mode, tests all tools via MCP protocol.
  * Includes restart test to verify index persistence and mtime diff sync.
@@ -249,6 +251,68 @@ describe("E2E: modern MCP", () => {
         assert.equal(denied.status, 401);
         assert.equal(denied.headers.get("www-authenticate"), `Bearer resource_metadata="http://localhost:${PORT}/.well-known/oauth-protected-resource"`);
     });
+});
+
+describe("E2E: structured search", () => {
+    for (const protocol of [MCP_PROTOCOL_VERSION, "2026-07-28"]) {
+        it(`returns structured hits, empty results and safe errors (${protocol})`, async () => {
+            const call = async (method: string, params: Record<string, unknown>) => {
+                const response = await fetch(BASE, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+                        "Authorization": `Bearer ${AUTH}`, "MCP-Protocol-Version": protocol,
+                        "Mcp-Method": method,
+                        ...(typeof params.name === "string" ? { "Mcp-Name": params.name } : {}),
+                    },
+                    body: JSON.stringify({ jsonrpc: "2.0", id: 77, method, params: {
+                        ...params,
+                        ...(protocol === "2026-07-28" ? { _meta: {
+                            "io.modelcontextprotocol/protocolVersion": protocol,
+                            "io.modelcontextprotocol/clientInfo": { name: "search-e2e", version: "1.0" },
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                        } } : {}),
+                    } }),
+                });
+                assert.equal(response.status, 200);
+                assert.equal(response.headers.get("mcp-session-id"), null);
+                return parseSSE(await response.text()).result;
+            };
+            const listed = await call("tools/list", {});
+            const schema = listed.tools.find((tool: any) => tool.name === "search_notes").outputSchema;
+            assert.equal(schema.type, "object");
+            const ajv = new Ajv();
+            addFormats(ajv);
+            const validate = ajv.compile(schema);
+            for (const args of [
+                { query: "welcome" }, { query: "nonexistentxyzzy" },
+                { query: "!!!" }, { query: "welcome", modified_after: "invalid-private-date" },
+            ]) {
+                const output = await call("tools/call", { name: "search_notes", arguments: args });
+                assert.ok(validate(output.structuredContent), JSON.stringify(validate.errors));
+                if (args.query === "!!!" || args.modified_after) {
+                    assert.equal(output.isError, true);
+                    assert.equal(output.structuredContent.error.code, "INVALID_SEARCH_INPUT");
+                    assert.doesNotMatch(JSON.stringify(output), /invalid-private-date|SQLITE/);
+                } else {
+                    assert.equal(output.isError, false);
+                    const { hits, returnedCount } = output.structuredContent.result;
+                    assert.equal(returnedCount, hits.length);
+                    if (args.query === "welcome") {
+                        assert.equal(hits[0].path, "Welcome.md");
+                        assert.equal(typeof hits[0].rank, "number");
+                        assert.equal(hits[0].title, "Welcome");
+                        assert.ok(hits[0].tags.includes("intro"));
+                        assert.match(hits[0].deepLink, /^obsidian:\/\/open/);
+                        assert.match(output.content[0].text, /Welcome.md/);
+                    } else {
+                        assert.deepEqual(hits, []);
+                        assert.match(output.content[0].text, /No notes found/);
+                    }
+                }
+            }
+        });
+    }
 });
 
 describe("E2E: request-body limit", () => {

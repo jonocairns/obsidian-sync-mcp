@@ -60,6 +60,8 @@ describe("SearchIndex", () => {
                 idx.searchNotes({ query: "provider" }).map((result) => result.path),
                 ["note.md"],
             );
+            assert.deepEqual(idx.searchNotes({ query: "provider" }), fullText.search({ query: "provider" }));
+            assert.equal(idx.searchNotes({ query: "provider" })[0].title, "note");
             idx.remove("note.md");
             assert.equal(idx.searchNotes({ query: "provider" }).length, 0);
         } finally {

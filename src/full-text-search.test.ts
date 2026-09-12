@@ -645,3 +645,26 @@ Provider recovery continues here with a resilience signal.`,
         );
     });
 });
+
+it("projects existing metadata without changing lane scores or order", async () => {
+    const index = await FullTextIndex.open(":memory:");
+    try {
+        index.update("alpha.md", "---\ntitle: Ignored YAML title\naliases: [Alternate, 'Two words']\ntags: [topic]\n---\n# Alpha\nbody", 123);
+        index.update("other.md", "body");
+        const exact = index.search({ query: "Alternate" });
+        assert.equal(exact[0].path, "alpha.md");
+        assert.equal(exact[0].rank, 12 / 60 + 5 / 60);
+        assert.equal(exact[0].matchedBy, "metadata");
+        assert.equal(exact[0].title, "Alpha");
+        assert.deepEqual(exact[0].aliases, ["Alternate", "Two words"]);
+        assert.deepEqual(exact[0].tags, ["topic"]);
+        assert.equal(exact[0].mtime, 123);
+        const body = index.search({ query: "body" });
+        assert.deepEqual(body.map(({ path, rank }) => ({ path, rank })), [
+            { path: "other.md", rank: 3 / 60 }, { path: "alpha.md", rank: 3 / 61 },
+        ]);
+        assert.deepEqual(body[0].aliases, []);
+        assert.deepEqual(body[0].tags, []);
+        assert.equal(body[0].title, "other");
+    } finally { index.close(); }
+});

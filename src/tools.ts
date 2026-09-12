@@ -1,7 +1,11 @@
+import { MAX_SEARCH_LIMIT } from "./search-limits.js";
+import { InvalidSearchInputError } from "./full-text-search.js";
+import { searchSchemaVersion, structuredSearchOutputSchema, searchError, toSearchToolResult } from "./search-contract.js";
 import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { makeDeepLink } from "./deeplink.js";
+import { parseIsoDate } from "./iso-date.js";
 import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
 import type { SearchBuildStatus, SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
@@ -318,8 +322,8 @@ export function registerTools(
                 notes = notes.filter((n) => searchIndex.getTags(n.path).includes(tag));
             }
             if (modified_after) {
-                const cutoff = new Date(modified_after).getTime();
-                if (isNaN(cutoff)) return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
+                const cutoff = parseIsoDate(modified_after);
+                if (cutoff === null) return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
                 notes = notes.filter((n) => n.mtime >= cutoff);
             }
             if (notes.length === 0) {
@@ -350,7 +354,7 @@ export function registerTools(
         name: "search_notes",
         annotations: { title: "Search notes", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         description:
-            "Search note titles, aliases, headings, tags, and body text using the disk-backed full-text index. Returns ranked paths with matching snippets. Exact title, alias, filename, and path matches rank first, so a known note name is a good query. Use list_notes only to browse a folder or tag without a text query.",
+            "Search note titles, aliases, headings, tags, and body text using the disk-backed full-text index. Returns structured hits and Markdown: a bounded ranked selection, with returnedCount counting only returned hits. Missing results do not prove absence. Read a fresh note version before mutation. Exact title, alias, filename, and path matches rank first, so a known note name is a good query. Use list_notes only to browse a folder or tag without a text query.",
         parameters: z.object({
             query: z
                 .string()
@@ -366,7 +370,7 @@ export function registerTools(
             modified_after: z
                 .string()
                 .optional()
-                .describe("Only include notes modified after this ISO date."),
+                .describe("Only include notes modified after this ISO date, e.g. '2026-03-25' or '2026-03-25T10:00'."),
             mode: z
                 .enum(["all", "any", "phrase"])
                 .optional()
@@ -375,46 +379,40 @@ export function registerTools(
                 .number()
                 .int()
                 .min(1)
-                .max(50)
+                .max(MAX_SEARCH_LIMIT)
                 .optional()
-                .describe("Maximum ranked results. Default 10; maximum 50."),
+                .describe(`Maximum ranked results. Default 10; maximum ${MAX_SEARCH_LIMIT}.`),
         }),
+        outputSchema: structuredSearchOutputSchema,
         execute: async ({ query, folder, tag, modified_after, mode, limit }) => {
             let modifiedAfter: number | undefined;
             if (modified_after) {
-                modifiedAfter = new Date(modified_after).getTime();
-                if (isNaN(modifiedAfter)) {
-                    return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
-                }
+                const cutoff = parseIsoDate(modified_after);
+                if (cutoff === null) return toSearchToolResult(searchError("INVALID_SEARCH_INPUT"));
+                modifiedAfter = cutoff;
             }
-
+            let failureStage: "execution" | "output" = "execution";
             try {
-                const status = searchIndex.status;
-                const statusNotice = formatIndexStatusNotice(status);
-                const results = searchIndex.searchNotes({
-                    query,
-                    folder,
-                    tag,
-                    modifiedAfter,
-                    mode,
-                    limit,
+                const statusNotice = formatIndexStatusNotice(searchIndex.status);
+                const results = searchIndex.searchNotes({ query, folder, tag, modifiedAfter, mode, limit });
+                failureStage = "output";
+                const hits = results.map(({ mtime, ...result }) => ({
+                    ...result,
+                    modified: mtime ? new Date(mtime).toISOString() : null,
+                    deepLink: makeDeepLink(vaultName, result.path),
+                }));
+                return toSearchToolResult({
+                    schemaVersion: searchSchemaVersion, status: "ok",
+                    result: { hits, returnedCount: hits.length },
+                    notices: statusNotice ? [statusNotice] : [],
                 });
-                if (results.length === 0) {
-                    return `${statusNotice ? `${statusNotice}\n\n` : ""}No notes found matching: ${query}`;
-                }
-
-                const rendered = results.map((result) => {
-                    const deepLink = makeDeepLink(vaultName, result.path);
-                    const date = result.mtime
-                        ? ` (${new Date(result.mtime).toISOString().slice(0, 10)})`
-                        : "";
-                    const location = result.breadcrumb ? ` — ${result.breadcrumb}` : "";
-                    const snippet = result.snippet ? `\n  ${result.snippet}` : "";
-                    return `- [${result.path}](${deepLink})${date}${location}${snippet}`;
-                }).join("\n");
-                return statusNotice ? `${statusNotice}\n\n${rendered}` : rendered;
             } catch (error) {
-                return `Invalid search query: ${(error as Error).message}`;
+                const invalidInput = failureStage === "execution" && error instanceof InvalidSearchInputError;
+                if (debugLogging && !invalidInput) {
+                    // Never log exception messages/stacks, schema issues, arguments, or hit data.
+                    console.error(`[tool] search_notes failed (${failureStage}; details redacted)`);
+                }
+                return toSearchToolResult(searchError(invalidInput ? "INVALID_SEARCH_INPUT" : "SEARCH_FAILED"));
             }
         },
     });
