@@ -63,7 +63,7 @@ The server implements a self-contained OAuth 2.1 authorization server with PKCE.
 
 - **E2E encryption supported** — when `COUCHDB_PASSPHRASE` is set, the server decrypts and encrypts vault data using the same scheme as Self-hosted LiveSync. Data is encrypted at rest in CouchDB.
 - **Text only** — binary attachments are not exposed through MCP tools, reducing the attack surface.
-- **Search result cap** — search results are limited to 50 matches, preventing large responses from exhausting memory or leaking excessive content.
+- **Search result cap** — search returns at most 50 ranked hits, including indexed title, aliases, tags, and snippets. This bounds hit count, not response bytes or exhaustive coverage. Search execution errors use fixed public messages without backend details.
 - **Search content is persisted** — full-text search stores note paths, titles,
   aliases, tags, links, modification times, content hashes, heading-level note
   text, and the CouchDB checkpoint in SQLite. Treat the index as a derived copy

@@ -217,7 +217,30 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 | `delete_note` | vault | vault + index |
 
 `write_note` is intentionally absent. The six single-note tools advertise a
-strict structured output contract; collection and search results remain unchanged.
+strict structured output contract. Listing tools remain text-only.
+`src/search-contract.ts` separately defines the strict versioned search success/error
+union and object-root MCP output schema. The tool validates the envelope (including
+`returnedCount === hits.length`) and renders Markdown from that same value.
+JSON Schema describes both variants; the cross-field count invariant is checked
+in code. Handled query/date errors use `INVALID_SEARCH_INPUT`; other execution
+failures use `SEARCH_FAILED`, with fixed public messages and `isError`.
+With `LOG_LEVEL=debug`, failures log only a fixed execution/output stage label;
+exception details, search arguments, and hit data are never logged. The engine,
+input schema, and output schema share `MAX_SEARCH_LIMIT` from `src/search-limits.ts`.
+
+Search enriches only the final capped hits with title, aliases, and tags from
+existing SQLite tables, without vault reads or a storage migration. The facade
+passes these fields through unchanged. Ranking weights, lane candidate limits,
+deduplication, ordering, filters, and default/max limits are unchanged. Rank is
+an RRF score; `matchedBy` identifies the selected snippet lane, not all scoring
+causes. Snippets retain Markdown highlighting, heading/breadcrumb are optional,
+and absent indexed modification times are `null`. Indexed title means first H1
+with filename fallback. Deep links are separate from canonical paths.
+
+Results are a bounded ranked selection. `returnedCount` is only the returned
+array length, including zero, and missing results do not establish absence.
+Search hits contain no mutation version. Existing index notices are copied into
+`notices` and Markdown; this adds no freshness or completeness guarantee.
 
 ## Build (`tsup.config.ts`)
 

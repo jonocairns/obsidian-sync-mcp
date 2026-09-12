@@ -1,3 +1,4 @@
+import { MAX_SEARCH_LIMIT } from "./search-limits.js";
 /** Encrypted, disk-backed, PKB-aware search for vault notes. */
 
 import { chmod, mkdir, open as openFile, rename } from "fs/promises";
@@ -23,7 +24,10 @@ export interface FullTextSearchResult {
     snippet: string;
     heading?: string;
     breadcrumb?: string;
-    matchedBy?: "exact" | "metadata" | "passage";
+    matchedBy: "exact" | "metadata" | "passage";
+    title: string;
+    aliases: string[];
+    tags: string[];
 }
 export interface FullTextSearchSetting { enabled: boolean; encryptIndex: boolean }
 export interface FullTextIndexOptions {
@@ -91,9 +95,11 @@ function queryTokens(value: string): string[] {
 function quotePhrase(tokens: string[]): string {
     return `"${tokens.join(" ").replaceAll('"', '""')}"`;
 }
+export class InvalidSearchInputError extends Error {}
+
 export function buildFtsQuery(query: string, mode: FullTextSearchMode = "all"): string {
     const tokens = queryTokens(query);
-    if (tokens.length === 0) throw new Error("Search query must contain at least one letter or number.");
+    if (tokens.length === 0) throw new InvalidSearchInputError("Search query must contain at least one letter or number.");
     return mode === "phrase"
         ? quotePhrase(tokens)
         : tokens.map((token) => quotePhrase([token])).join(mode === "any" ? " OR " : " AND ");
@@ -499,7 +505,7 @@ export class FullTextIndex {
     }
 
     search(options: FullTextSearchOptions): FullTextSearchResult[] {
-        const limit = Math.max(1, Math.min(options.limit ?? 10, 50));
+        const limit = Math.max(1, Math.min(options.limit ?? 10, MAX_SEARCH_LIMIT));
         const match = buildFtsQuery(options.query, options.mode);
         const normalized = normalizeLookup(options.query);
         const candidates = new Map<string, Candidate>();
@@ -607,7 +613,19 @@ export class FullTextIndex {
         return [...candidates.values()]
             .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path))
             .slice(0, limit)
-            .map(({ score, snippetPriority: _priority, ...result }) => ({ ...result, rank: score }));
+            .map(({ score, snippetPriority: _priority, ...result }) => {
+                // Project only the capped hits from existing index tables; never read the vault.
+                const metadata = this.statement(`
+                    SELECT title,
+                        (SELECT json_group_array(alias) FROM
+                            (SELECT alias FROM note_aliases WHERE path = notes.path ORDER BY rowid)) AS aliases,
+                        (SELECT json_group_array(tag) FROM
+                            (SELECT tag FROM note_tags WHERE path = notes.path ORDER BY rowid)) AS tags
+                    FROM notes WHERE path = ?
+                `).get(result.path) as { title: string; aliases: string; tags: string };
+                return { ...result, rank: score, title: metadata.title,
+                    aliases: JSON.parse(metadata.aliases) as string[], tags: JSON.parse(metadata.tags) as string[] };
+            });
     }
 
     listWithMtime(folder?: string): Array<{ path: string; mtime: number }> {
