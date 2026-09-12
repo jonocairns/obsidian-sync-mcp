@@ -421,8 +421,14 @@ it("serves schema-valid indexed search without vault reads, preserving limits an
             assert.equal((await callSearch({ query: "searchable", ...filters })).structuredContent.result.returnedCount, 0);
         }
         assert.equal((await callSearch({ query: "unrelated" })).structuredContent.result.hits[0].modified, null);
-        for (const args of [{ query: "!!!" }, { query: "searchable", modified_after: "bad date" }]) {
-            const error = await callSearch(args);
+        // "1" and "2024-02-30" are accepted by new Date() — they must not become a silent cutoff.
+        for (const modified_after of ["bad date", "1", "2024-02-30", "2026-3-25"]) {
+            const error = await callSearch({ query: "searchable", modified_after });
+            assert.equal(error.isError, true, modified_after);
+            assert.equal(error.structuredContent.error.code, "INVALID_SEARCH_INPUT", modified_after);
+        }
+        {
+            const error = await callSearch({ query: "!!!" });
             assert.equal(error.isError, true);
             assert.equal(error.structuredContent.error.code, "INVALID_SEARCH_INPUT");
         }
@@ -467,6 +473,29 @@ it("logs only sanitized search failure stages when debug logging is enabled", as
         assert.doesNotMatch(JSON.stringify({ errors, execution, output }), /SQL|credentials|private|secret snippet|NaN/);
     } finally {
         console.error = originalError;
+        index.close();
+    }
+});
+
+it("rejects non-ISO modified_after in list_notes instead of applying a silent cutoff", async () => {
+    const notes = [
+        { path: "old.md", mtime: Date.UTC(2024, 0, 1) },
+        { path: "new.md", mtime: Date.UTC(2026, 0, 1) },
+    ];
+    const vault = { ...backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] }), listNotesWithMtime: async () => notes };
+    const index = new SearchIndex();
+    try {
+        const listNotes = toolsFor(vault, index).get("list_notes");
+        // new Date() accepts all of these; "1" would silently cut off at year 2001
+        // and "2024-02-30" would roll over to 2024-03-01.
+        for (const modified_after of ["1", "0", "2024-02-30", "2026-3-25", "bad date"]) {
+            const output = await listNotes.execute({ modified_after }, {});
+            assert.match(output, /^Invalid date format/, modified_after);
+        }
+        const filtered = await listNotes.execute({ modified_after: "2025-01-01" }, {});
+        assert.match(filtered, /new\.md/);
+        assert.doesNotMatch(filtered, /old\.md/);
+    } finally {
         index.close();
     }
 });

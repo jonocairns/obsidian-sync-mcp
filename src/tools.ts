@@ -5,6 +5,7 @@ import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { makeDeepLink } from "./deeplink.js";
+import { parseIsoDate } from "./iso-date.js";
 import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
 import type { SearchBuildStatus, SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
@@ -321,8 +322,8 @@ export function registerTools(
                 notes = notes.filter((n) => searchIndex.getTags(n.path).includes(tag));
             }
             if (modified_after) {
-                const cutoff = new Date(modified_after).getTime();
-                if (isNaN(cutoff)) return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
+                const cutoff = parseIsoDate(modified_after);
+                if (cutoff === null) return `Invalid date format: ${modified_after}. Use ISO format like '2026-03-25'.`;
                 notes = notes.filter((n) => n.mtime >= cutoff);
             }
             if (notes.length === 0) {
@@ -369,7 +370,7 @@ export function registerTools(
             modified_after: z
                 .string()
                 .optional()
-                .describe("Only include notes modified after this ISO date."),
+                .describe("Only include notes modified after this ISO date, e.g. '2026-03-25' or '2026-03-25T10:00'."),
             mode: z
                 .enum(["all", "any", "phrase"])
                 .optional()
@@ -386,8 +387,9 @@ export function registerTools(
         execute: async ({ query, folder, tag, modified_after, mode, limit }) => {
             let modifiedAfter: number | undefined;
             if (modified_after) {
-                modifiedAfter = new Date(modified_after).getTime();
-                if (isNaN(modifiedAfter)) return toSearchToolResult(searchError("INVALID_SEARCH_INPUT"));
+                const cutoff = parseIsoDate(modified_after);
+                if (cutoff === null) return toSearchToolResult(searchError("INVALID_SEARCH_INPUT"));
+                modifiedAfter = cutoff;
             }
             let failureStage: "execution" | "output" = "execution";
             try {
