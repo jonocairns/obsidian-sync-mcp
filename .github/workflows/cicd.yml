@@ -198,6 +198,13 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          # Without these the token inherits whatever the installation happens
+          # to hold. Naming them keeps this token bounded if the App is ever
+          # granted more. `issues` is not optional: Release Please maintains
+          # its autorelease:* labels through the issues API.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
       - name: Create or update release PR
         if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
