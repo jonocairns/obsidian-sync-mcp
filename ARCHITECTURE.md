@@ -217,7 +217,20 @@ Agent connects → /oauth/authorize → password page → /oauth/approve
 | `delete_note` | vault | vault + index |
 
 `write_note` is intentionally absent. The six single-note tools advertise a
-strict structured output contract. Listing tools remain text-only.
+strict structured output contract. Listing tools use `src/list-contract.ts` with an independent `1.0.0` version and
+three narrowed object-root output schemas. Runtime validation checks note count
+invariants; Markdown renders from the same validated envelope. Successes carry
+index-status notices, while sanitized execution/output errors do not.
+`src/list-limits.ts` shares the default 100 and maximum 1,000 note bounds.
+`total` is the exact filtered candidate count before truncation. `source` records
+index or vault candidate paths; empty scoped index listings trigger the existing
+fallback. Tag filtering remains index-backed on fallback, so neither field claims
+complete vault coverage. Empty-string folders select root candidates before the
+fallback decision; nonempty folders remain recursive. Folder counts are direct
+children and root uses an empty path. Both indexes group normalized tags once per
+note and preserve SQLite's first-per-note, binary-minimum representative label.
+Modification sorting uses a path tiebreak. Folder/tag listings remain uncapped,
+and no pagination or exhaustive retrieval guarantee is provided.
 `src/search-contract.ts` separately defines the strict versioned search success/error
 union and object-root MCP output schema. The tool validates the envelope (including
 `returnedCount === hits.length`) and renders Markdown from that same value.

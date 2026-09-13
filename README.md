@@ -220,8 +220,8 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 | `read_note` | Read canonical Markdown plus an authoritative opaque version |
 | `create_note` | Create a Markdown note only when the path is absent |
 | `edit_note` | Conditionally edit with `replace_all`, `append`, `prepend_body`, or exact-one `replace_once` |
-| `list_folders` | List all folders in the vault with note counts — use to discover folder names |
-| `list_tags` | List all tags in the vault with counts — use to discover tags before filtering |
+| `list_folders` | List candidate folders with direct note counts — use to discover folder names |
+| `list_tags` | List indexed tags with note counts — use to discover tags before filtering |
 | `list_notes` | List notes with timestamps. Filter by folder, name, tag, or date. Sort by name or modified. |
 | `search_notes` | Ranked full-text search across titles, aliases, headings, tags, and note bodies, with snippets and folder/tag/date filters |
 | `delete_note` | Conditionally delete using an authoritative version |
@@ -234,9 +234,47 @@ status is one of `ok`, `conflict`, `committed_with_conflict`, `partial`,
 `indeterminate`, or `error`, with stable error codes, explicit effects, and
 recovery guidance. Note-identifying successful results include a separate
 [Obsidian deep link](https://help.obsidian.md/Extending+Obsidian/Obsidian+URI).
-Listing contracts remain text-only. `search_notes` returns Markdown plus validated
+`search_notes` returns Markdown plus validated
 `structuredContent` under its own strict output schema (`schemaVersion: "1.0.0"`,
 independent of the package and single-note schema versions).
+
+The three listing tools return Markdown and strict `structuredContent` with their own
+`schemaVersion: "1.0.0"`. Each advertises only its own success kind plus shared errors.
+For example, `list_notes({"folder":"", "limit":1})` can return:
+
+```json
+{"schemaVersion":"1.0.0","status":"ok","result":{"kind":"notes","source":"index","entries":[{"path":"Welcome.md","modified":null,"deepLink":"obsidian://open?vault=MyVault&file=Welcome"}],"returnedCount":1,"total":2,"truncated":true},"notices":[]}
+```
+
+`total` counts exactly the matching candidates before truncation, not authoritative
+vault coverage. `source` identifies candidate paths: `index`, or `vault` when the
+scoped index listing is empty. A folder miss can fall back with a populated index.
+Tag filtering always uses indexed metadata, even on vault fallback; no body reads
+recover missing tags. A tag-filtered vault fallback includes a notice explaining
+that candidates without indexed tags are excluded. `list_tags` always uses the index.
+
+Omitting `folder` selects all notes; explicitly passing `""` now selects only root
+notes. Nonempty folder filters remain recursive. `list_folders({})` returns
+`kind: "folders"` and entries like `{"path":"projects","directNoteCount":0}`:
+counts include immediate children only, with zero-count ancestors synthesized.
+Root has path `""`, displayed as `(root)`, separate from a real `(root)` folder, displayed as `(root)/`.
+`list_tags({})` returns `kind: "tags"` with `{"tag":"Project","count":3}` entries.
+Grouping and filtering use `toLocaleLowerCase("en-US")`, counting each note once.
+Labels retain the first spelling per note, then the binary-minimum spelling across
+notes, matching SQLite. Tags sort by descending count then binary tag name.
+Notes sort by name, or newest modification with a path tiebreak. Unknown timestamps
+are `null`; entries carry separate deep links but no mutation-safe version.
+
+Note limits accept coerced integers from 1 to 1,000, defaulting to 100; invalid
+limits are rejected rather than clamped. Invalid limits are rejected by framework
+input validation before execution, without the structured listing envelope. Invalid
+`modified_after` strings instead return the structured `INVALID_LIST_INPUT` error.
+Clients must handle both error channels. Folders and tags remain uncapped.
+The cap bounds entries, not bytes or enumeration cost. Pagination is unavailable,
+and narrower filters cannot always retrieve every omitted match. Successes include
+index-status `notices`; fixed `INVALID_LIST_INPUT` (invalid date) and `LIST_FAILED`
+(execution/output failure) errors have no notices or private backend details.
+Empty listings make no claim that the vault is empty.
 
 For example, `search_notes({"query":"provider", "folder":"work", "limit":10})`
 returns an envelope shaped like:
@@ -493,7 +531,7 @@ account.
 - **Single machine on Fly.io.** Auth state is in-memory, so multiple machines break the OAuth flow. The setup script enforces this automatically.
 - **No conflict resolution.** If an agent and Obsidian edit the same note simultaneously, last write wins.
 - **Text only.** Binary attachments are not exposed through MCP tools.
-- **Deep links depend on the client.** Obsidian `obsidian://` deep links are included in every tool response. They work on Claude Mobile and in browsers, but some clients (Claude Desktop) may not render them as clickable links.
+- **Deep links depend on the client.** Obsidian `obsidian://` deep links are included in note-identifying success responses. They work on Claude Mobile and in browsers, but some clients (Claude Desktop) may not render them as clickable links.
 - **Node 24 LTS required.** Native dependencies must match the runtime platform and architecture.
 - **Source checkouts use pnpm with a seven-day dependency cooldown.** Dependency
   lifecycle scripts are denied unless their exact package version is reviewed in

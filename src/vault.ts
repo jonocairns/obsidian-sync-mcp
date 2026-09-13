@@ -492,6 +492,7 @@ export class Vault implements VaultBackend {
             if (entry.deleted) continue;
             const notePath = entry.path ?? "";
             if (!notePath.endsWith(".md")) continue;
+            if (folder === "" && notePath.includes("/")) continue;
             if (folder && !notePath.startsWith(folder)) continue;
             results.push({ path: notePath, mtime: entry.mtime ?? 0 });
         }
