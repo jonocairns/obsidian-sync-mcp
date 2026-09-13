@@ -29,3 +29,14 @@ it("validates populated, empty, truncated and error listings with strict fields 
     assert.match(output.content[0].text, /\[a.md\]\(obsidian:\/\/open\?a\)/);
     assert.match(output.content[0].text, /1 more/);
 });
+
+it("distinguishes root and the literal root-named folder in Markdown", () => {
+    const output = toListToolResult({ schemaVersion: "1.0.0", status: "ok", notices: [], result: {
+        kind: "folders", source: "index", entries: [
+            { path: "", directNoteCount: 1 }, { path: "(root)", directNoteCount: 2 },
+        ],
+    } });
+    assert.equal(output.content[0].text, "- (root) (1 notes)\n- (root)/ (2 notes)");
+    assert.ok(output.structuredContent.status === "ok" && output.structuredContent.result.kind === "folders");
+    assert.deepEqual(output.structuredContent.result.entries.map(e => e.path), ["", "(root)"]);
+});

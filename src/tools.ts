@@ -329,6 +329,7 @@ export function registerTools(
                 if (cutoff !== undefined) notes = notes.filter((n) => n.mtime >= cutoff);
                 notes.sort((a, b) => (sort_by === "modified" ? b.mtime - a.mtime : 0) || a.path.localeCompare(b.path));
                 const notices = indexStatusNotices(searchIndex);
+                if (tag && source === "vault") notices.push("Tag filtering uses indexed metadata; vault candidates without indexed tags are excluded.");
                 failureStage = "output";
                 const entries = notes.slice(0, limit ?? DEFAULT_LIST_LIMIT).map((n) => ({
                     path: n.path, modified: n.mtime === 0 ? null : new Date(n.mtime).toISOString(),

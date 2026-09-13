@@ -250,13 +250,14 @@ For example, `list_notes({"folder":"", "limit":1})` can return:
 vault coverage. `source` identifies candidate paths: `index`, or `vault` when the
 scoped index listing is empty. A folder miss can fall back with a populated index.
 Tag filtering always uses indexed metadata, even on vault fallback; no body reads
-recover missing tags. `list_tags` always uses the index.
+recover missing tags. A tag-filtered vault fallback includes a notice explaining
+that candidates without indexed tags are excluded. `list_tags` always uses the index.
 
 Omitting `folder` selects all notes; explicitly passing `""` now selects only root
 notes. Nonempty folder filters remain recursive. `list_folders({})` returns
 `kind: "folders"` and entries like `{"path":"projects","directNoteCount":0}`:
 counts include immediate children only, with zero-count ancestors synthesized.
-Root has path `""`, displayed as `(root)`, separate from a real `(root)` folder.
+Root has path `""`, displayed as `(root)`, separate from a real `(root)` folder, displayed as `(root)/`.
 `list_tags({})` returns `kind: "tags"` with `{"tag":"Project","count":3}` entries.
 Grouping and filtering use `toLocaleLowerCase("en-US")`, counting each note once.
 Labels retain the first spelling per note, then the binary-minimum spelling across
@@ -265,7 +266,10 @@ Notes sort by name, or newest modification with a path tiebreak. Unknown timesta
 are `null`; entries carry separate deep links but no mutation-safe version.
 
 Note limits accept coerced integers from 1 to 1,000, defaulting to 100; invalid
-limits are rejected rather than clamped. Folders and tags remain uncapped.
+limits are rejected rather than clamped. Invalid limits are rejected by framework
+input validation before execution, without the structured listing envelope. Invalid
+`modified_after` strings instead return the structured `INVALID_LIST_INPUT` error.
+Clients must handle both error channels. Folders and tags remain uncapped.
 The cap bounds entries, not bytes or enumeration cost. Pagination is unavailable,
 and narrower filters cannot always retrieve every omitted match. Successes include
 index-status `notices`; fixed `INVALID_LIST_INPUT` (invalid date) and `LIST_FAILED`

@@ -61,7 +61,7 @@ export function toListToolResult(value: StructuredListResult) {
             rendered = result.entries.map((n) => `- ${n.modified?.slice(0, 16) ?? ""} [${n.path}](${n.deepLink})`).join("\n") || "No notes match these filters.";
             if (result.truncated) rendered += `\n\n... and ${result.total - result.returnedCount} more matching candidates. This listing is truncated; no continuation is available.`;
         } else if (result.kind === "folders") {
-            rendered = result.entries.map((f) => `- ${f.path || "(root)"} (${f.directNoteCount} notes)`).join("\n") || "No folders found among listing candidates.";
+            rendered = result.entries.map((f) => `- ${f.path === "(root)" ? "(root)/" : f.path || "(root)"} (${f.directNoteCount} notes)`).join("\n") || "No folders found among listing candidates.";
         } else rendered = result.entries.map((t) => `- #${t.tag} (${t.count} notes)`).join("\n") || "No indexed tags found.";
         text = [...validated.notices, rendered].join("\n\n");
     }

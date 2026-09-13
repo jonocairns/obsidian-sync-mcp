@@ -526,7 +526,14 @@ for (const sqlite of [false, true]) it(`listing contract matrix (${sqlite ? "SQL
         assert.equal((await call("list_notes")).structuredContent.result.source, "vault");
         assert.equal((await call("list_folders")).structuredContent.result.source, "vault");
         assert.deepEqual((await call("list_tags")).structuredContent.result.entries, []);
-        assert.equal((await call("list_notes", { tag: "project" })).structuredContent.result.total, 0);
+        const tagFallback = await call("list_notes", { tag: "project" });
+        assert.equal(tagFallback.structuredContent.result.total, 0);
+        assert.deepEqual(tagFallback.structuredContent.notices, ["Tag filtering uses indexed metadata; vault candidates without indexed tags are excluded."]);
+        assert.match(tagFallback.content[0].text, /vault candidates without indexed tags are excluded/);
+        assert.deepEqual((await call("list_notes")).structuredContent.notices, []);
+        index.setBuildStatus("building", 1, 2);
+        assert.equal((await call("list_notes", { tag: "project" })).structuredContent.notices.length, 2);
+        index.setBuildStatus("ready");
         index.update("nested/only.md", "#project", 1);
         const rootFallback = (await call("list_notes", { folder: "" })).structuredContent.result;
         assert.equal(rootFallback.source, "vault");
@@ -550,6 +557,7 @@ for (const sqlite of [false, true]) it(`listing contract matrix (${sqlite ? "SQL
             assert.equal(result.truncated, t.count > 1);
         }
         assert.equal((await call("list_notes", { tag: "PROJECT" })).structuredContent.result.total, 3);
+        assert.deepEqual((await call("list_notes", { tag: "PROJECT" })).structuredContent.notices, []);
         assert.deepEqual((await call("list_notes", { sort_by: "name" })).structuredContent.result.entries.map((n: any) => n.path),
             ["(root)/child.md", "a.md", "parent/deep/child.md", "z.md"]);
 

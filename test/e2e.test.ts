@@ -289,6 +289,12 @@ describe("E2E: structured search", () => {
                 if (name === "list_notes") {
                     assert.equal(output.structuredContent.result.returnedCount, 1);
                     assert.equal(output.structuredContent.result.truncated, true);
+                    for (const limit of [-1, 0, 1.5, 1001, "not-a-number"]) {
+                        const rejected = await call("tools/call", { name, arguments: { limit } });
+                        assert.equal(rejected.isError, true, JSON.stringify(rejected));
+                        assert.equal(rejected.structuredContent, undefined);
+                        assert.match(rejected.content[0].text, /limit/i);
+                    }
                     for (const args of [{ name: "nonexistentxyzzy" }, { modified_after: "private-invalid" }]) {
                         const response = await call("tools/call", { name, arguments: args });
                         assert.ok(validate(response.structuredContent));
