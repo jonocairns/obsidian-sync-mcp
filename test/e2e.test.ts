@@ -634,6 +634,14 @@ describe("E2E: MCP_INSTRUCTIONS", () => {
 
 describe("E2E: cold restart with persisted index", () => {
     it("picks up changes and removes stale entries after restart", async () => {
+        // HTTP readiness does not mean the preceding startup has indexed its
+        // fixtures (including agent-rules.md). Establish a persisted baseline
+        // before testing which changes are discovered across the next restart.
+        const baselineDeadline = Date.now() + 5000;
+        while (Date.now() < baselineDeadline && !/Search index (updated|up to date)/.test(serverLogs)) {
+            await new Promise((r) => setTimeout(r, 50));
+        }
+        assert.match(serverLogs, /Search index (updated|up to date)/, "Baseline index reconciliation must finish before shutdown");
         // Stop server (closes SQLite and flushes auth state)
         const firstLogs = await stopServer();
         assert.ok(firstLogs.includes("Shutting down..."), "Should shut down cleanly");
