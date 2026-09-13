@@ -184,10 +184,21 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
         run: scripts/ci/release-context.sh
+      # Author the release PR as the release bot rather than github-actions[bot].
+      # PRs opened with the default GITHUB_TOKEN are held in `action_required`
+      # and their checks never start without a manual approval.
+      - id: app-token
+        name: Mint release bot token
+        if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
       - name: Create or update release PR
         if: steps.context.outputs.update-pr == 'true' && steps.context.outputs.release-context != 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
+          token: ${{ steps.app-token.outputs.token }}
           skip-github-release: true
       - id: github-release
         name: Create tag and GitHub Release
