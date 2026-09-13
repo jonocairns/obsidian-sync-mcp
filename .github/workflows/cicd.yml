@@ -167,6 +167,10 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: ci-required
     runs-on: ubuntu-latest
+    # Holds the release bot credentials. Its deployment branch policy allows
+    # main only, so the secrets stay unreachable even if the job-level `if:`
+    # above is ever weakened.
+    environment: release
     permissions:
       contents: write
       pull-requests: write
