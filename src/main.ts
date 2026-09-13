@@ -13,6 +13,7 @@ import {
     deriveSearchBackendId,
     FullTextIndex,
     resolveFullTextSearchSetting,
+    SCHEMA_VERSION,
     searchIndexStoragePaths,
     type FullTextSearchSetting,
 } from "./full-text-search.js";
@@ -166,7 +167,10 @@ if (fullTextSetting.enabled) {
         );
     }
     if (fullTextIndex.recreatedForSchemaMismatch) {
-        console.warn("Archived an incompatible search index and started a clean v2 rebuild.");
+        console.warn(
+            `Archived an incompatible search index and started a clean schema v${SCHEMA_VERSION} ` +
+            "rebuild. This re-reads every note once; remote vaults re-pull from CouchDB.",
+        );
     }
     if (fullTextIndex.recreatedForIdentityMismatch) {
         console.warn("Archived a search index owned by a different backend and started a clean rebuild.");

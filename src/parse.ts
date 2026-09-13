@@ -12,6 +12,38 @@ export interface NoteMetadata {
     linkLabels: string[];
 }
 
+/**
+ * Obsidian tags accept any Unicode letter, number or mark, plus `_`, `-`, `/`
+ * for nesting and emoji, so `#café` and `#日本語` are ordinary tags. An
+ * ASCII-only class truncates them mid-word — `#café` indexes as `caf` and
+ * `#日本語` vanishes — which invents a tag the vault never had. Emoji arrive as
+ * sequences, so the class also carries the joiner, skin-tone modifiers and the
+ * regional indicators that spell a flag; enclosing keycaps are marks already.
+ */
+const INLINE_TAG =
+    /(^|\s)#([\p{L}\p{N}\p{M}\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u200D_/-]+)/gu;
+
+/**
+ * Obsidian requires every tag to contain at least one non-numerical character,
+ * so `#1984` is not a tag but `#1984book` is. Without this guard the inline
+ * `#tag` pattern captures ordinary prose references such as "PR #6553" or
+ * "issue #27", which then pollute `list_tags` and make `list_notes(tag=...)`
+ * match on something the vault never tagged. Digits are matched by script, so
+ * `#١٩٨٤` is rejected for the same reason `#1984` is.
+ */
+function isTagName(value: string): boolean {
+    return value.length > 0 && !/^\p{Nd}+$/u.test(value);
+}
+
+/**
+ * Tags are compared and counted as written, so the two Unicode spellings of
+ * `#café` must not become two tags in `list_tags`. NFC is a no-op for ASCII.
+ */
+function collectTag(tags: Set<string>, value: string): void {
+    const tag = value.normalize("NFC");
+    if (isTagName(tag)) tags.add(tag);
+}
+
 function stringList(value: unknown): string[] {
     if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
     if (typeof value !== "string") return value == null ? [] : [String(value)];
@@ -50,7 +82,7 @@ export function parseFrontmatterAndLinks(content: string): NoteMetadata {
                 for (const [key, value] of Object.entries(parsed ?? {})) {
                     frontmatter[key] = typeof value === "string" ? value : JSON.stringify(value);
                 }
-                for (const tag of stringList(parsed?.tags)) tags.add(tag);
+                for (const tag of stringList(parsed?.tags)) collectTag(tags, tag);
                 for (const alias of [
                     ...stringList(parsed?.aliases),
                     ...stringList(parsed?.alias),
@@ -64,8 +96,8 @@ export function parseFrontmatterAndLinks(content: string): NoteMetadata {
     }
 
     // Inline #tags
-    for (const match of content.matchAll(/(^|\s)#([\w/-]+)/g)) {
-        tags.add(match[2]);
+    for (const match of content.matchAll(INLINE_TAG)) {
+        collectTag(tags, match[2]);
     }
 
     // [[wikilinks]]
