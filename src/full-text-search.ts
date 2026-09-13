@@ -74,8 +74,10 @@ export function searchIndexStoragePaths(baseDataDir: string, backendId: string, 
 }
 
 // Includes indexed-content semantics, not only table layout. Rebuild indexes
-// that may contain base64 bodies, empty legacy entries, or missed tombstones.
-const SCHEMA_VERSION = 3;
+// that may contain base64 bodies, empty legacy entries, missed tombstones,
+// purely numeric tags extracted from prose references such as "PR #6553", or
+// non-ASCII tags truncated by the old tag pattern ("#café" indexed as "caf").
+export const SCHEMA_VERSION = 4;
 const CANDIDATE_LIMIT = 200;
 const EXACT_WEIGHT = 12;
 // Prefix matches exist for partial-word queries the FTS lanes cannot serve at
@@ -495,7 +497,8 @@ export class FullTextIndex {
                 SELECT 1 FROM note_tags filter_tags
                 WHERE filter_tags.path = ${alias}.path AND filter_tags.tag_norm = ?
             )`);
-            parameters.push(options.tag.toLocaleLowerCase("en-US"));
+            // note_tags.tag is stored NFC, so fold the query the same way.
+            parameters.push(options.tag.normalize("NFC").toLocaleLowerCase("en-US"));
         }
         if (options.modifiedAfter !== undefined) {
             conditions.push(`${alias}.mtime >= ?`);

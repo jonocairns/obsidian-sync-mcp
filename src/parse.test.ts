@@ -83,6 +83,73 @@ reviewed: {{date:YYYY-MM-DD}} # populated when the template runs
         assert.ok(result.tags.includes("project/sub-tag"));
     });
 
+    it("rejects purely numeric prose references as tags", () => {
+        const content = "Landed in PR #6553 and issue #27, tracked under #1984.";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags, []);
+    });
+
+    it("keeps tags that mix digits with other tag characters", () => {
+        const content = "Notes on #1984book #q1-goals #2026/planning #v2 here";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(
+            result.tags.sort(),
+            ["1984book", "2026/planning", "q1-goals", "v2"],
+        );
+    });
+
+    it("rejects purely numeric frontmatter tags", () => {
+        const content = `---
+tags: [2026, release, 27]
+---
+
+# Release`;
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags, ["release"]);
+    });
+
+    it("keeps non-ASCII tags whole", () => {
+        const content = "Notes on #café and #日本語 and #привет here";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags.sort(), ["café", "日本語", "привет"].sort());
+    });
+
+    it("keeps emoji tags including ZWJ sequences", () => {
+        const content = "Shipped #\u{1F680} with #\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467} today";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(
+            result.tags.sort(),
+            ["\u{1F680}", "\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}"].sort(),
+        );
+    });
+
+    it("keeps flag and keycap emoji tags", () => {
+        const content = "Team #\u{1F1F3}\u{1F1FF} ranked #1\u{FE0F}\u{20E3} this year";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(
+            result.tags.sort(),
+            ["\u{1F1F3}\u{1F1FF}", "1\u{FE0F}\u{20E3}"].sort(),
+        );
+    });
+
+    it("stops non-ASCII tags at trailing punctuation", () => {
+        const content = "Wrote #日本語。 and #café, then stopped";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags.sort(), ["café", "日本語"].sort());
+    });
+
+    it("folds the two Unicode spellings of a tag into one", () => {
+        const content = "Both #caf\u00E9 and #cafe\u0301 mean the same tag";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags, ["caf\u00E9"]);
+    });
+
+    it("rejects non-ASCII digit runs as tags", () => {
+        const content = "Arabic-Indic #\u0661\u0669\u0668\u0664 is still a number";
+        const result = parseFrontmatterAndLinks(content);
+        assert.deepEqual(result.tags, []);
+    });
+
     it("deduplicates tags from frontmatter and inline", () => {
         const content = `---
 tags: [shared]
