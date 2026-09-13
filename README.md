@@ -220,8 +220,8 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 | `read_note` | Read canonical Markdown plus an authoritative opaque version |
 | `create_note` | Create a Markdown note only when the path is absent |
 | `edit_note` | Conditionally edit with `replace_all`, `append`, `prepend_body`, or exact-one `replace_once` |
-| `list_folders` | List all folders in the vault with note counts — use to discover folder names |
-| `list_tags` | List all tags in the vault with counts — use to discover tags before filtering |
+| `list_folders` | List candidate folders with direct note counts — use to discover folder names |
+| `list_tags` | List indexed tags with note counts — use to discover tags before filtering |
 | `list_notes` | List notes with timestamps. Filter by folder, name, tag, or date. Sort by name or modified. |
 | `search_notes` | Ranked full-text search across titles, aliases, headings, tags, and note bodies, with snippets and folder/tag/date filters |
 | `delete_note` | Conditionally delete using an authoritative version |

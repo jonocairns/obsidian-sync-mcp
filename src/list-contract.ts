@@ -50,6 +50,9 @@ export function listError(code: "INVALID_LIST_INPUT" | "LIST_FAILED"): Structure
         ? "Invalid listing input. Use a valid ISO modified_after date."
         : "Listing could not be completed. Try again later." } };
 }
+function markdownLabel(value: string): string {
+    return value.replace(/[\\`*_[\]{}()<>!#&|]/g, "\\$&").replace(/\r/g, "␍").replace(/\n/g, "␊");
+}
 export function toListToolResult(value: StructuredListResult) {
     const validated = structuredListResultSchema.parse(value);
     let text: string;
@@ -58,7 +61,7 @@ export function toListToolResult(value: StructuredListResult) {
         const result = validated.result;
         let rendered: string;
         if (result.kind === "notes") {
-            rendered = result.entries.map((n) => `- ${n.modified?.slice(0, 16) ?? ""} [${n.path}](${n.deepLink})`).join("\n") || "No notes match these filters.";
+            rendered = result.entries.map((n) => `- ${n.modified?.slice(0, 16) ?? ""} [${markdownLabel(n.path)}](<${n.deepLink}>)`).join("\n") || "No notes match these filters.";
             if (result.truncated) rendered += `\n\n... and ${result.total - result.returnedCount} more matching candidates. This listing is truncated; no continuation is available.`;
         } else if (result.kind === "folders") {
             rendered = result.entries.map((f) => `- ${f.path === "(root)" ? "(root)/" : f.path || "(root)"} (${f.directNoteCount} notes)`).join("\n") || "No folders found among listing candidates.";

@@ -1,3 +1,4 @@
+import { makeDeepLink } from "./deeplink.js";
 import { it } from "node:test";
 import assert from "node:assert/strict";
 import { structuredListResultSchema, toListToolResult, listError } from "./list-contract.js";
@@ -26,7 +27,7 @@ it("validates populated, empty, truncated and error listings with strict fields 
     }
     const output = toListToolResult(structuredListResultSchema.parse(success));
     assert.equal(output.structuredContent.status, "ok");
-    assert.match(output.content[0].text, /\[a.md\]\(obsidian:\/\/open\?a\)/);
+    assert.match(output.content[0].text, /\[a.md\]\(<obsidian:\/\/open\?a>\)/);
     assert.match(output.content[0].text, /1 more/);
 });
 
@@ -39,4 +40,16 @@ it("distinguishes root and the literal root-named folder in Markdown", () => {
     assert.equal(output.content[0].text, "- (root) (1 notes)\n- (root)/ (2 notes)");
     assert.ok(output.structuredContent.status === "ok" && output.structuredContent.result.kind === "folders");
     assert.deepEqual(output.structuredContent.result.entries.map(e => e.path), ["", "(root)"]);
+});
+
+it("renders special path characters as label text without changing structured paths or links", () => {
+    const path = "note](mailto:other@example.com)[x\r\n<em>&copy;_*.md";
+    const deepLink = makeDeepLink("Test", path);
+    const output = toListToolResult({ schemaVersion: "1.0.0", status: "ok", notices: [], result: {
+        kind: "notes", source: "index", entries: [{ path, modified: null, deepLink }],
+        returnedCount: 1, total: 1, truncated: false,
+    } });
+    assert.equal(output.content[0].text, String.raw`-  [note\]\(mailto:other@example.com\)\[x␍␊\<em\>\&copy;\_\*.md](<${deepLink}>)`);
+    assert.ok(output.structuredContent.status === "ok" && output.structuredContent.result.kind === "notes");
+    assert.deepEqual(output.structuredContent.result.entries, [{ path, modified: null, deepLink }]);
 });
