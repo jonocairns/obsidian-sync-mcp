@@ -323,9 +323,14 @@ export function registerTools(
                     notes = await vault.listNotesWithMtime(folder);
                 }
                 if (name) notes = notes.filter((n) => n.path.toLowerCase().includes(name.toLowerCase()));
-                if (tag) notes = notes.filter((n) => searchIndex.getTags(n.path).some(
-                    (value) => value.toLocaleLowerCase("en-US") === tag.toLocaleLowerCase("en-US"),
-                ));
+                if (tag) {
+                    // Indexed tags are NFC (see collectTag); fold the caller's
+                    // spelling to match, or a decomposed "caf\u00e9" misses.
+                    const wanted = tag.normalize("NFC").toLocaleLowerCase("en-US");
+                    notes = notes.filter((n) => searchIndex.getTags(n.path).some(
+                        (value) => value.toLocaleLowerCase("en-US") === wanted,
+                    ));
+                }
                 if (cutoff !== undefined) notes = notes.filter((n) => n.mtime >= cutoff);
                 notes.sort((a, b) => (sort_by === "modified" ? b.mtime - a.mtime : 0) || a.path.localeCompare(b.path));
                 const notices = indexStatusNotices(searchIndex);

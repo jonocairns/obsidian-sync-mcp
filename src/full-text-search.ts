@@ -497,7 +497,8 @@ export class FullTextIndex {
                 SELECT 1 FROM note_tags filter_tags
                 WHERE filter_tags.path = ${alias}.path AND filter_tags.tag_norm = ?
             )`);
-            parameters.push(options.tag.toLocaleLowerCase("en-US"));
+            // note_tags.tag is stored NFC, so fold the query the same way.
+            parameters.push(options.tag.normalize("NFC").toLocaleLowerCase("en-US"));
         }
         if (options.modifiedAfter !== undefined) {
             conditions.push(`${alias}.mtime >= ?`);

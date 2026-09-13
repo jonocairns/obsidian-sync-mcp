@@ -30,6 +30,11 @@ const INLINE_TAG =
  * "issue #27", which then pollute `list_tags` and make `list_notes(tag=...)`
  * match on something the vault never tagged. Digits are matched by script, so
  * `#١٩٨٤` is rejected for the same reason `#1984` is.
+ *
+ * Only decimal digits are rejected, though the tag class admits every
+ * `\p{N}`. The asymmetry is deliberate: this rule exists to stop prose number
+ * references becoming tags, and no one writes "PR #①②③", while `#½` and
+ * `#Ⅷ` are plausible tags. Nl and No numerals are kept on purpose.
  */
 function isTagName(value: string): boolean {
     return value.length > 0 && !/^\p{Nd}+$/u.test(value);

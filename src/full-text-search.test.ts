@@ -291,6 +291,22 @@ Provider recovery continues here with a resilience signal.`,
         }
     });
 
+    it("matches a tag filter written in either Unicode normal form", async () => {
+        const index = await FullTextIndex.open(":memory:");
+        try {
+            // Authored decomposed; stored composed by collectTag. Both
+            // spellings of the query must reach the same note.
+            index.update("n.md", `# Note\nprovider timeline #${"caf\u00e9".normalize("NFD")}`, 300);
+            assert.deepEqual(index.getTags("n.md"), ["caf\u00e9".normalize("NFC")]);
+            for (const form of ["NFC", "NFD"] as const) {
+                const hits = index.search({ query: "provider", tag: "caf\u00e9".normalize(form) });
+                assert.deepEqual(hits.map((r) => r.path), ["n.md"], `tag query in ${form}`);
+            }
+        } finally {
+            index.close();
+        }
+    });
+
     it("persists tags, links, backlinks, and checkpoints transactionally", async () => {
         const index = await FullTextIndex.open(":memory:");
         try {

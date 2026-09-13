@@ -500,6 +500,26 @@ it("rejects non-ISO modified_after in list_notes instead of applying a silent cu
     }
 });
 
+for (const sqlite of [false, true]) it(`list_notes matches a tag in either Unicode normal form (${sqlite ? "SQLite" : "memory"})`, async () => {
+    const { FullTextIndex } = await import("./full-text-search.js");
+    const index = new SearchIndex(sqlite ? await FullTextIndex.open(":memory:") : undefined);
+    const vault = backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] });
+    try {
+        // Authored decomposed; stored composed by collectTag. A caller passing
+        // either spelling must reach the note.
+        index.update("n.md", `#${"caf\u00e9".normalize("NFD")}`, 1);
+        const listNotes = toolsFor(vault, index).get("list_notes");
+        for (const form of ["NFC", "NFD"] as const) {
+            const out = await listNotes.execute({ tag: "caf\u00e9".normalize(form) }, {});
+            assert.deepEqual(
+                out.structuredContent.result.entries.map((n: any) => n.path), ["n.md"], `tag in ${form}`,
+            );
+        }
+    } finally {
+        index.close();
+    }
+});
+
 for (const sqlite of [false, true]) it(`listing contract matrix (${sqlite ? "SQLite" : "memory"})`, async () => {
     const { FullTextIndex } = await import("./full-text-search.js");
     const { structuredListResultSchema } = await import("./list-contract.js");
