@@ -13,6 +13,7 @@ import type { SearchBuildStatus, SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
 import { applyNoteEdit } from "./note-edit.js";
 import { domainError, recovery, schemaVersion, structuredNoteOutputSchema, toToolResult, type ErrorCode, type StructuredNoteResult } from "./note-contract.js";
+import { extractNoteAttachments } from "./note-attachments.js";
 import { parseFrontmatterAndLinks } from "./parse.js";
 
 const debugLogging = process.env.LOG_LEVEL === "debug";
@@ -235,7 +236,7 @@ export function registerTools(
     };
     server.addTool({
         name: "read_note",
-        description: "Read canonical Markdown and an authoritative opaque version. Use that version for edit, delete, or move.",
+        description: "Read canonical Markdown, attachment references, and an authoritative opaque version. Use that version for edit, delete, or move.",
         annotations: { title: "Read note", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note, e.g. 'daily/2026-03-23.md'"),
@@ -255,6 +256,7 @@ export function registerTools(
                     size: read.note.size,
                     timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
                     frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
+                    attachments: extractNoteAttachments(markdown),
                     conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
                     concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),
                 },
@@ -541,7 +543,7 @@ export function registerTools(
 
     server.addTool({
         name: "get_note_metadata",
-        description: "Get note metadata and an authoritative opaque version without returning Markdown content. Backlinks include explicit index freshness.",
+        description: "Get note metadata, attachment references, and an authoritative opaque version without returning Markdown content. Backlinks include explicit index freshness.",
         annotations: { title: "Get note metadata", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
         parameters: z.object({
             path: z.string().describe("Vault-relative path to the note, e.g. 'projects/my-project.md'"),
@@ -560,6 +562,7 @@ export function registerTools(
                     kind: "note", path: read.note.path, version: read.note.version, size: read.note.size,
                     timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
                     frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
+                    attachments: extractNoteAttachments(markdown),
                     backlinks: searchIndex.getBacklinks(path), indexFreshness: indexFreshness(searchIndex),
                     conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
                     concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),

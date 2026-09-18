@@ -49,6 +49,29 @@ function interleave(object: any, method: string, action: () => Promise<void>) {
 
 for (const encrypted of [false, true]) {
     const mode = encrypted ? "encrypted/obfuscated" : "plaintext";
+    test(`binary attachments reconstruct through pinned revisions (${mode})`, async () => {
+        await fixture(async (a, b) => {
+            const path = "Media/large.png";
+            const bytes = Uint8Array.from({ length: 700_000 }, (_, i) => (i * 73 + (i >> 8)) & 0xff);
+            const now = Date.now();
+            assert.equal(await a.manipulator.put(path, new Blob([bytes], { type: "application/octet-stream" }), {
+                ctime: now, mtime: now, size: bytes.length,
+            }), true);
+            const first = await a.readAttachment(path, bytes.length);
+            const second = await b.readAttachment(path, bytes.length);
+            assert.equal(first.status, "ok");
+            assert.equal(second.status, "ok");
+            if (first.status !== "ok" || second.status !== "ok") throw new Error("attachment read failed");
+            assert.deepEqual(first.attachment.bytes, bytes);
+            assert.deepEqual(second.attachment.bytes, bytes);
+            assert.equal(first.attachment.version, second.attachment.version);
+            assert.ok((await a.listAttachments()).includes(path));
+            const oversized = await a.readAttachment(path, bytes.length - 1);
+            assert.equal(oversized.status, "error");
+            if (oversized.status === "error") assert.equal(oversized.code, "TOO_LARGE");
+        }, encrypted);
+    });
+
     test(`create cannot overwrite a concurrent creator (${mode})`, async () => {
         await fixture(async (a, b) => {
             interleave(a.manipulator, "put", async () => {

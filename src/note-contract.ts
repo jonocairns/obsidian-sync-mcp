@@ -2,7 +2,7 @@ import { jsonSchemaAdapter, type JsonSchemaObject } from "@vitemcp/server";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 
-export const schemaVersion = "0.9.0" as const;
+export const schemaVersion = "0.10.0" as const;
 export const recoveryStrategySchema = z.enum(["retry_same", "read_then_retry", "change_request", "manual_reconcile", "none"]);
 export const errorCodeSchema = z.enum([
     "INVALID_PATH", "NOTE_NOT_FOUND", "WRITE_DENIED", "STALE_VERSION",
@@ -21,6 +21,14 @@ export const effectSchema = z.object({
 }).strict();
 const timestampsSchema = z.object({ created: z.string(), modified: z.string() }).strict();
 const conflictStateSchema = z.object({ hasConflicts: z.boolean(), leafCount: z.number().int().positive() }).strict();
+const attachmentReferenceSchema = z.object({
+    target: z.string(),
+    kind: z.enum(["embed", "link"]),
+    syntax: z.enum(["wikilink", "markdown"]),
+    mimeTypeHint: z.enum(["image/png", "image/jpeg", "image/webp", "application/pdf"]),
+    fragment: z.string().optional(),
+    display: z.string().optional(),
+}).strict();
 const noteBaseSchema = z.object({
     kind: z.literal("note"),
     path: z.string(),
@@ -30,6 +38,7 @@ const noteBaseSchema = z.object({
     frontmatter: z.record(z.string()),
     tags: z.array(z.string()),
     outgoingLinks: z.array(z.string()),
+    attachments: z.array(attachmentReferenceSchema),
     conflict: conflictStateSchema,
     concurrency: z.enum(["best_effort", "strict_winner_cas"]),
     deepLink: z.string(),

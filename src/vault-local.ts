@@ -5,7 +5,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { glob } from "fs/promises";
 import { parseFrontmatterAndLinks } from "./parse.js";
 import { encodeNoteVersion } from "./note-version.js";
-import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, BackendReadResult, VersionedNote } from "./vault-backend.js";
+import { validAttachmentPath } from "./attachment-path.js";
+import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, BackendReadResult, VersionedNote, AttachmentReadResult } from "./vault-backend.js";
 
 export class LocalVault implements VaultBackend {
     private root: string;
@@ -29,8 +30,8 @@ export class LocalVault implements VaultBackend {
         return canonical;
     }
 
-    private async safePath(path: string): Promise<string> {
-        const canonical = this.normalizePath(path);
+    private async safePath(path: string, attachment = false): Promise<string> {
+        const canonical = attachment && validAttachmentPath(path) ? path : this.normalizePath(path);
         const full = resolve(this.root, canonical);
         if (!full.startsWith(this.root + sep)) {
             throw Object.assign(new Error("Path traversal blocked"), { code: "INVALID_PATH" });
@@ -135,6 +136,54 @@ export class LocalVault implements VaultBackend {
             if (error.code === "INVALID_PATH") return { status: "error", code: "INVALID_PATH" };
             return { status: "error", code: "BACKEND_UNAVAILABLE" };
         }
+    }
+
+    async readAttachment(path: string, maxBytes: number): Promise<AttachmentReadResult> {
+        if (!validAttachmentPath(path)) return { status: "error", code: "INVALID_PATH" };
+        try {
+            const full = await this.safePath(path, true);
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const handle = await open(full, "r");
+                try {
+                    const before = await handle.stat({ bigint: true });
+                    if (!before.isFile()) return { status: "error", code: "INVALID_PATH" };
+                    if (before.size > BigInt(maxBytes)) return { status: "error", code: "TOO_LARGE", size: Number(before.size) };
+                    const buffer = Buffer.alloc(Math.min(maxBytes + 1, Number(before.size) + 1));
+                    let length = 0;
+                    while (length < buffer.length) {
+                        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+                        if (bytesRead === 0) break;
+                        length += bytesRead;
+                    }
+                    if (length > maxBytes) return { status: "error", code: "TOO_LARGE", size: length };
+                    const after = await handle.stat({ bigint: true });
+                    const beforeId = this.statIdentity(before);
+                    const afterId = this.statIdentity(after);
+                    if (JSON.stringify(beforeId) !== JSON.stringify(afterId)) continue;
+                    const bytes = buffer.subarray(0, length);
+                    return { status: "ok", attachment: {
+                        path, bytes, size: bytes.byteLength,
+                        version: encodeNoteVersion({ backend: "local:" + this.root, path, state: "exists", mutation: { ...afterId, contentHash: createHash("sha256").update(bytes).digest("base64url") } }),
+                        mtime: Number(after.mtimeNs / 1_000_000n),
+                    } };
+                } finally { await handle.close(); }
+            }
+            return { status: "error", code: "BACKEND_UNAVAILABLE" };
+        } catch (error: any) {
+            if (error.code === "ENOENT") return { status: "error", code: "NOTE_NOT_FOUND" };
+            if (error.code === "INVALID_PATH") return { status: "error", code: "INVALID_PATH" };
+            return { status: "error", code: "BACKEND_UNAVAILABLE" };
+        }
+    }
+
+    async listAttachments(): Promise<string[]> {
+        const paths: string[] = [];
+        for await (const path of glob("**/*", { cwd: this.root })) {
+            if (!validAttachmentPath(path)) continue;
+            // A glob may traverse a symlink. safePath proves the target stays in the vault.
+            try { await this.safePath(path, true); paths.push(path); } catch { /* skip unsafe entries */ }
+        }
+        return paths.sort((a, b) => a.localeCompare(b));
     }
 
     async init(): Promise<void> {}

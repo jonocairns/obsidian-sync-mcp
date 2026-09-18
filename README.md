@@ -217,7 +217,8 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 
 | Tool | Description |
 |---|---|
-| `read_note` | Read canonical Markdown plus an authoritative opaque version |
+| `read_note` | Read canonical Markdown, attachment references, and an authoritative opaque version |
+| `read_attachment` | Read an existing PNG, JPEG, WebP, or PDF by exact path, or by embed target and source note path |
 | `create_note` | Create a Markdown note only when the path is absent |
 | `edit_note` | Conditionally edit with `replace_all`, `append`, `prepend_body`, or exact-one `replace_once` |
 | `list_folders` | List candidate folders with direct note counts — use to discover folder names |
@@ -226,7 +227,32 @@ Set `BASE_URL` to the tunnel URL when using authentication.
 | `search_notes` | Ranked full-text search across titles, aliases, headings, tags, and note bodies, with snippets and folder/tag/date filters |
 | `delete_note` | Conditionally delete using an authoritative version |
 | `move_note` | Conditionally move using an authoritative source version and absent destination |
-| `get_note_metadata` | Get metadata, graph links, index freshness, and an authoritative opaque version |
+| `get_note_metadata` | Get metadata, attachment references, graph links, index freshness, and an authoritative opaque version |
+
+`read_note` and `get_note_metadata` return an `attachments` array in their
+structured result. Each entry identifies a supported image or PDF link in the
+note, whether it is an embed or ordinary link, the original link syntax, a
+MIME-type hint from its extension, and any fragment or display text. The
+array does not read the referenced file, claim it exists, or include binary
+content. For example, `![[report.pdf#page=3]]` yields a target of
+`report.pdf` and a `page=3` fragment. To fetch it, call
+`read_attachment({"target":"report.pdf","sourceNotePath":"notes/source.md"})`.
+Vault-root, note-relative, and shortest-name targets are supported; ambiguous
+short names return candidate paths. `read_attachment({"path":"assets/photo.png"})`
+reads an exact vault-relative path and returns image bytes in an MCP `image`
+content block.
+
+PDFs are returned as embedded binary resources. Both formats also have a
+versioned `obsidian-attachment://` resource URI for `resources/read`; the same
+authentication applies to resource reads. The `structuredContent` result contains
+path, MIME type, raw byte size, opaque version, modification time and URI, but no
+base64. The server does not describe images, render PDFs or extract PDF text.
+Whether a client passes PDF resources to its model depends on that client.
+
+The supported types are checked from bytes, including image dimensions and basic
+PDF structure. Reads are limited to 10 MiB for images and 20 MiB for PDFs by
+default. Attachment reads use the existing vault-wide read access; `READ_ONLY`
+still permits them. Attachment creation, replacement and deletion are not exposed.
 
 The six single-note tools return both deterministic text and validated
 `structuredContent` under an advertised MCP `outputSchema`. The structured
@@ -415,6 +441,9 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `MCP_ALLOWED_HOSTS` | Optional | — | Comma-separated extra hostnames (e.g. `192.168.1.5,mybox.local`). Browser Origin hostnames must be local or listed here, including with bearer authentication. In no-auth mode, the request Host must also be local or listed to block DNS rebinding. Localhost and loopback addresses are always allowed, on any port. Clients without an Origin header do not need a browser-origin entry. |
 | `DATA_DIR` | Optional | `~/.obsidian-mcp` | Directory for the SQLite search index and auth tokens |
 | `FULL_TEXT_SEARCH` | Optional | `auto` | Disk-backed SQLite full-text search: `auto` and `true` enable it; `false` disables it. When `COUCHDB_PASSPHRASE` is set, the local index is encrypted with a backend-specific derived key. Note: `false` also disables index persistence — metadata is rebuilt in memory on every startup, and CouchDB mode replays the full `_changes` feed each time. |
+| `ATTACHMENT_MAX_IMAGE_BYTES` | Optional | `10485760` | Maximum raw bytes returned for a PNG, JPEG, or WebP. |
+| `ATTACHMENT_MAX_PDF_BYTES` | Optional | `20971520` | Maximum raw bytes returned for a PDF. |
+| `ATTACHMENT_MAX_PIXELS` | Optional | `40000000` | Maximum width × height for an image; either dimension is also capped at 16384. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
@@ -530,7 +559,7 @@ account.
 - **Single vault per instance.** Each server connects to one vault. For multiple vaults, run multiple instances on different ports.
 - **Single machine on Fly.io.** Auth state is in-memory, so multiple machines break the OAuth flow. The setup script enforces this automatically.
 - **No conflict resolution.** If an agent and Obsidian edit the same note simultaneously, last write wins.
-- **Text only.** Binary attachments are not exposed through MCP tools.
+- **Limited attachments.** The read-only attachment API supports PNG, JPEG, WebP and PDF. Other media and attachment writes are not exposed.
 - **Deep links depend on the client.** Obsidian `obsidian://` deep links are included in note-identifying success responses. They work on Claude Mobile and in browsers, but some clients (Claude Desktop) may not render them as clickable links.
 - **Node 24 LTS required.** Native dependencies must match the runtime platform and architecture.
 - **Source checkouts use pnpm with a seven-day dependency cooldown.** Dependency
