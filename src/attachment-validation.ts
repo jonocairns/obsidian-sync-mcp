@@ -85,7 +85,8 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
         return { status: "error", code: "MALFORMED_CONTENT" };
     }
     let offset = 12;
-    let width = 0, height = 0;
+    let canvasWidth = 0, canvasHeight = 0;
+    let frameWidth = 0, frameHeight = 0;
     let hasFrame = false;
     while (offset + 8 <= bytes.length) {
         const kind = ascii(bytes, offset, 4);
@@ -95,20 +96,27 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
         if (kind === "ANIM" || kind === "ANMF") return { status: "error", code: "UNSUPPORTED_CONTENT" };
         if (kind === "VP8X") {
             if (length !== 10 || (bytes[data] & 0x02) !== 0) return { status: "error", code: "UNSUPPORTED_CONTENT" };
-            width = le24(bytes, data + 4) + 1; height = le24(bytes, data + 7) + 1;
+            canvasWidth = le24(bytes, data + 4) + 1; canvasHeight = le24(bytes, data + 7) + 1;
         } else if (kind === "VP8 " && length >= 10 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
-            const frameWidth = ((bytes[data + 7] << 8) | bytes[data + 6]) & 0x3fff;
-            const frameHeight = ((bytes[data + 9] << 8) | bytes[data + 8]) & 0x3fff;
-            width ||= frameWidth; height ||= frameHeight; hasFrame = true;
+            frameWidth = ((bytes[data + 7] << 8) | bytes[data + 6]) & 0x3fff;
+            frameHeight = ((bytes[data + 9] << 8) | bytes[data + 8]) & 0x3fff;
+            hasFrame = true;
         } else if (kind === "VP8L" && length >= 5 && bytes[data] === 0x2f) {
-            const frameWidth = 1 + (bytes[data + 1] | ((bytes[data + 2] & 0x3f) << 8));
-            const frameHeight = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0x0f) << 10));
-            width ||= frameWidth; height ||= frameHeight; hasFrame = true;
+            frameWidth = 1 + (bytes[data + 1] | ((bytes[data + 2] & 0x3f) << 8));
+            frameHeight = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0x0f) << 10));
+            hasFrame = true;
         }
         offset = data + length + (length & 1);
     }
     if (offset !== bytes.length || !hasFrame) return { status: "error", code: "MALFORMED_CONTENT" };
-    const result = checkDimensions(width, height, maxPixels);
+    // The container requires every frame to fit inside the declared canvas. A small
+    // VP8X canvas must not hide a larger frame from the pixel budget, so check both.
+    if (canvasWidth && (frameWidth > canvasWidth || frameHeight > canvasHeight)) {
+        return { status: "error", code: "MALFORMED_CONTENT" };
+    }
+    const frame = checkDimensions(frameWidth, frameHeight, maxPixels);
+    if (frame.status === "error") return frame;
+    const result = checkDimensions(canvasWidth || frameWidth, canvasHeight || frameHeight, maxPixels);
     return result.status === "ok" ? { ...result, mimeType: "image/webp" } : result;
 }
 

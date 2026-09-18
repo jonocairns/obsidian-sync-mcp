@@ -42,6 +42,27 @@ export function minimalPdf(): Buffer {
     return Buffer.from(text);
 }
 
+function riffChunk(id: string, data: Buffer): Buffer {
+    const header = Buffer.alloc(8);
+    header.write(id, 0, "latin1");
+    header.writeUInt32LE(data.length, 4);
+    return Buffer.concat([header, data, data.length & 1 ? Buffer.alloc(1) : Buffer.alloc(0)]);
+}
+
+/** WebP whose VP8X canvas claims 1×1 while the VP8L frame really declares 16000×16000. */
+export function webpWithOversizedFrame(): Buffer {
+    const vp8l = Buffer.from([0x2f, 0x7f, 0xfe, 0x9f, 0x0f, 0x00, 0x00, 0x00]);
+    const body = Buffer.concat([
+        Buffer.from("WEBP", "latin1"),
+        riffChunk("VP8X", Buffer.alloc(10)),
+        riffChunk("VP8L", vp8l),
+    ]);
+    const riff = Buffer.alloc(8);
+    riff.write("RIFF", 0, "latin1");
+    riff.writeUInt32LE(body.length, 4);
+    return Buffer.concat([riff, body]);
+}
+
 // 2×2 red images encoded by FFmpeg; kept as bytes so tests need no media tools.
 export const smallJpeg = Buffer.from("/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYwLjMxLjEwMgD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABgEBAQAAAAAAAAAAAAAAAAAABgcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAACAAIDASIAAhEAAxEA/9oADAMBAAIRAxEAPwCLAFF/f//Z", "base64");
 export const smallWebp = Buffer.from("UklGRjwAAABXRUJQVlA4IDAAAADQAQCdASoCAAIAAgA0JaACdLoB+AADsAD+8Oj3/yC5YXXI1/8gP+QH/ID/+PIAAAA=", "base64");

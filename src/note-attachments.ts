@@ -55,19 +55,60 @@ function reference(
     };
 }
 
-function wikiAt(input: string, offset: number, kind: NoteAttachmentReference["kind"]):
+/** Longest destination a vault attachment link can hold; bounds work on malformed lines. */
+const MAX_DESTINATION = 1024;
+
+interface LineIndex {
+    start: number;
+    end: number;
+    /** Offset of the matching "]" for the "[" at each position, or -1. Indexed from `start`. */
+    match: Int32Array;
+    /** Offset of the first unescaped "]]" at or after each position, or -1. Indexed from `start`. */
+    wikiClose: Int32Array;
+}
+
+/**
+ * Index one line's bracket structure in a single pass. Scanning ahead from every
+ * unmatched "[" would cost quadratic time on a long malformed line, and deriving
+ * escapes from the line start rather than from each candidate keeps one phase.
+ */
+function indexLine(input: string, start: number): LineIndex {
+    const newline = input.indexOf("\n", start);
+    const end = newline < 0 ? input.length : newline;
+    const length = end - start;
+    const escaped = new Uint8Array(length);
+    for (let i = 0; i + 1 < length; i++) {
+        if (input[start + i] === "\\" && !escaped[i]) escaped[i + 1] = 1;
+    }
+    const match = new Int32Array(length).fill(-1);
+    const open: number[] = [];
+    for (let i = 0; i < length; i++) {
+        if (escaped[i]) continue;
+        if (input[start + i] === "[") open.push(i);
+        else if (input[start + i] === "]") {
+            const opened = open.pop();
+            if (opened !== undefined) match[opened] = start + i;
+        }
+    }
+    const wikiClose = new Int32Array(length + 1).fill(-1);
+    for (let i = length - 1; i >= 0; i--) {
+        wikiClose[i] = i + 1 < length && !escaped[i] && input[start + i] === "]" && input[start + i + 1] === "]"
+            ? start + i : wikiClose[i + 1];
+    }
+    return { start, end, match, wikiClose };
+}
+
+function wikiAt(input: string, offset: number, kind: NoteAttachmentReference["kind"], line: LineIndex):
     { end: number; value: NoteAttachmentReference | null } | null {
     const start = offset + (kind === "embed" ? 3 : 2);
-    for (let cursor = start; cursor < input.length && input[cursor] !== "\n"; cursor++) {
-        if (input[cursor] === "\\") { cursor++; continue; }
-        if (input[cursor] !== "]" || input[cursor + 1] !== "]") continue;
-        const raw = input.slice(start, cursor);
-        const separator = raw.indexOf("|");
-        const target = separator < 0 ? raw : raw.slice(0, separator);
-        const display = separator < 0 ? undefined : raw.slice(separator + 1);
-        return { end: cursor + 2, value: reference(target, kind, "wikilink", display) };
-    }
-    return null;
+    if (start > line.end) return null;
+    const close = line.wikiClose[start - line.start];
+    if (close < 0) return null;
+    const raw = input.slice(start, close);
+    const separator = raw.indexOf("|");
+    const target = separator < 0 ? raw : raw.slice(0, separator);
+    const display = separator < 0 ? undefined : raw.slice(separator + 1);
+    return { end: close + 2, value: reference(target, kind, "wikilink", display) };
 }
 
 function unescapeMarkdown(input: string): string {
@@ -79,6 +120,21 @@ function unescapeMarkdown(input: string): string {
     return output;
 }
 
+/**
+ * Offset of a trailing CommonMark "(title)" run, or -1. Anchoring to the end keeps
+ * real names such as `report (1).png` in the destination instead of reading them
+ * as a title.
+ */
+function parenthesizedTitle(text: string): number {
+    if (!text.endsWith(")")) return -1;
+    let depth = 0;
+    for (let cursor = text.length - 1; cursor >= 0; cursor--) {
+        if (text[cursor] === ")") depth++;
+        else if (text[cursor] === "(" && --depth === 0) return cursor;
+    }
+    return -1;
+}
+
 function markdownDestination(raw: string): string | null {
     const text = raw.trim();
     let destination: string;
@@ -87,13 +143,14 @@ function markdownDestination(raw: string): string | null {
         if (close < 0) return null;
         destination = text.slice(1, close);
     } else {
+        const title = parenthesizedTitle(text);
         let end = text.length;
         for (let cursor = 0; cursor < text.length; cursor++) {
             if (text[cursor] === "\\") { cursor++; continue; }
             if (text[cursor] !== " " && text[cursor] !== "\t") continue;
             let next = cursor + 1;
             while (text[next] === " " || text[next] === "\t") next++;
-            if (text[next] === '"' || text[next] === "'") { end = cursor; break; }
+            if (text[next] === '"' || text[next] === "'" || next === title) { end = cursor; break; }
         }
         destination = text.slice(0, end).trim();
     }
@@ -104,22 +161,19 @@ function markdownDestination(raw: string): string | null {
     catch { return null; }
 }
 
-function markdownAt(input: string, offset: number, kind: NoteAttachmentReference["kind"]):
+function markdownAt(input: string, offset: number, kind: NoteAttachmentReference["kind"], line: LineIndex):
     { end: number; value: NoteAttachmentReference | null } | null {
-    const labelStart = offset + (kind === "embed" ? 2 : 1);
-    let cursor = labelStart;
-    let brackets = 1;
-    for (; cursor < input.length && input[cursor] !== "\n"; cursor++) {
-        if (input[cursor] === "\\") { cursor++; continue; }
-        if (input[cursor] === "[") brackets++;
-        if (input[cursor] === "]" && --brackets === 0) break;
-    }
-    if (brackets !== 0 || input[cursor + 1] !== "(") return null;
-    const display = input.slice(labelStart, cursor);
-    const destinationStart = cursor + 2;
+    const opening = offset + (kind === "embed" ? 1 : 0);
+    if (opening < line.start || opening >= line.end) return null;
+    const labelEnd = line.match[opening - line.start];
+    if (labelEnd < 0 || input[labelEnd + 1] !== "(") return null;
+    const display = input.slice(opening + 1, labelEnd);
+    const destinationStart = labelEnd + 2;
+    const limit = Math.min(line.end, destinationStart + MAX_DESTINATION);
+    let cursor = destinationStart;
     let parentheses = 1;
     let angle = false;
-    for (cursor = destinationStart; cursor < input.length && input[cursor] !== "\n"; cursor++) {
+    for (; cursor < limit; cursor++) {
         if (input[cursor] === "\\") { cursor++; continue; }
         if (input[cursor] === "<") angle = true;
         else if (input[cursor] === ">") angle = false;
@@ -138,6 +192,13 @@ export function extractNoteAttachments(markdown: string): NoteAttachmentReferenc
     let fence: { marker: string; length: number } | null = null;
     let inlineTicks = 0;
     let lineStart = true;
+    let line: LineIndex | null = null;
+    const lineFor = (offset: number): LineIndex => {
+        if (!line || offset < line.start || offset > line.end) {
+            line = indexLine(markdown, markdown.lastIndexOf("\n", offset - 1) + 1);
+        }
+        return line;
+    };
 
     for (let cursor = 0; cursor < markdown.length;) {
         if (lineStart) {
@@ -176,7 +237,8 @@ export function extractNoteAttachments(markdown: string): NoteAttachmentReferenc
         const opening = kind === "embed" ? cursor + 1 : cursor;
         if (markdown[opening] === "[") {
             const parsed = markdown[opening + 1] === "["
-                ? wikiAt(markdown, cursor, kind) : markdownAt(markdown, cursor, kind);
+                ? wikiAt(markdown, cursor, kind, lineFor(cursor))
+                : markdownAt(markdown, cursor, kind, lineFor(cursor));
             if (parsed) {
                 if (parsed.value) {
                     const key = JSON.stringify(parsed.value);

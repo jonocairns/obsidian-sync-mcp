@@ -30,3 +30,23 @@ it("keeps the actual MIME type provisional until read_attachment checks the byte
         { target: "image.JPG", kind: "embed", syntax: "wikilink", mimeTypeHint: "image/jpeg" },
     ]);
 });
+
+it("reads a parenthesised link title without losing names that end in brackets", () => {
+    assert.deepEqual(extractNoteAttachments("[scan](scan.pdf (PDF scan))").map((found) => found.target), ["scan.pdf"]);
+    assert.deepEqual(extractNoteAttachments("![x](report (1).png)").map((found) => found.target), ["report (1).png"]);
+    assert.deepEqual(extractNoteAttachments("![x](report (1).png (title))").map((found) => found.target), ["report (1).png"]);
+});
+
+it("scans a long malformed line in linear time", () => {
+    const scale = (length: number) => {
+        const started = performance.now();
+        assert.deepEqual(extractNoteAttachments(`${"[".repeat(length)}\n![[real.png]]`), [
+            { target: "real.png", kind: "embed", syntax: "wikilink", mimeTypeHint: "image/png" },
+        ]);
+        return performance.now() - started;
+    };
+    scale(2_000);
+    const small = Math.max(scale(20_000), 1);
+    // Quadratic rescanning made a tenfold line cost a hundredfold; linear stays well under that.
+    assert.ok(scale(200_000) < small * 30, "attachment scanning is superlinear in line length");
+});

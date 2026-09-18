@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import type { ViteMCP } from "@vitemcp/server";
 import { LocalVault } from "./vault-local.js";
 import { DEFAULT_ATTACHMENT_LIMITS, attachmentResultSchema, registerAttachmentTools, resolveAttachmentPath, readValidatedAttachment } from "./attachments.js";
-import { minimalPdf, onePixelPng, smallJpeg, smallWebp } from "../test/media-fixtures.js";
+import { minimalPdf, onePixelPng, smallJpeg, smallWebp, webpWithOversizedFrame } from "../test/media-fixtures.js";
 
 it("reads an image embed and a PDF through tool and resource content without changing bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "attachment-read-"));
@@ -105,6 +105,11 @@ it("rejects ambiguous, missing, traversal, oversized, and malformed attachments"
         const corrupt = await readValidatedAttachment(vault, "corrupt.png", DEFAULT_ATTACHMENT_LIMITS);
         assert.equal(corrupt.status, "error");
         if (corrupt.status === "error") assert.equal(corrupt.error.code, "MALFORMED_CONTENT");
+        // A VP8X canvas must not understate the frame and slip past the pixel budget.
+        await writeFile(join(root, "lying-canvas.webp"), webpWithOversizedFrame());
+        const lyingCanvas = await readValidatedAttachment(vault, "lying-canvas.webp", DEFAULT_ATTACHMENT_LIMITS);
+        assert.equal(lyingCanvas.status, "error");
+        if (lyingCanvas.status === "error") assert.equal(lyingCanvas.error.code, "MALFORMED_CONTENT");
         await writeFile(join(root, "unsupported.png"), Buffer.from("GIF89a"));
         const unsupported = await readValidatedAttachment(vault, "unsupported.png", DEFAULT_ATTACHMENT_LIMITS);
         assert.equal(unsupported.status, "error");
