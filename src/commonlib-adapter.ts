@@ -110,6 +110,12 @@ export class UpstreamAdapter extends DirectFileManipulator {
         return { _rev: value._rev, _conflicts: revisions("_conflicts"), _deleted_conflicts: revisions("_deleted_conflicts") };
     }
 
+    /** Metadata-only existence probe. Never reconstructs chunked content. */
+    async entryExists(path: FilePathWithPrefix): Promise<boolean> {
+        const meta = await this.liveSyncLocalDB.getDBEntryMeta(path);
+        return Boolean(meta) && !(meta as { deleted?: boolean })?.deleted && !(meta as { _deleted?: boolean })?._deleted;
+    }
+
     async getVersionedEntry(path: FilePathWithPrefix, maxBytes?: number): Promise<false | (LoadedEntry & RevisionMetadata)> {
         const id = await this.path2id(path);
         const metadata = await this.readRevisionMetadata(id);

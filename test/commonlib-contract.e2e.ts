@@ -66,6 +66,10 @@ for (const encrypted of [false, true]) {
             assert.deepEqual(second.attachment.bytes, bytes);
             assert.equal(first.attachment.version, second.attachment.version);
             assert.ok((await a.listAttachments()).includes(path));
+            // The metadata-only probe must agree with the listing without reconstructing chunks.
+            assert.equal(await a.attachmentExists(path), true);
+            assert.equal(await b.attachmentExists(path), true);
+            assert.equal(await a.attachmentExists("Media/absent.png"), false);
             const oversized = await a.readAttachment(path, bytes.length - 1);
             assert.equal(oversized.status, "error");
             if (oversized.status === "error") assert.equal(oversized.code, "TOO_LARGE");

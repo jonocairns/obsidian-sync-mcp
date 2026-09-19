@@ -6,7 +6,41 @@ import { tmpdir } from "node:os";
 import type { ViteMCP } from "@vitemcp/server";
 import { LocalVault } from "./vault-local.js";
 import { DEFAULT_ATTACHMENT_LIMITS, attachmentResultSchema, registerAttachmentTools, resolveAttachmentPath, readValidatedAttachment } from "./attachments.js";
-import { minimalPdf, onePixelPng, smallJpeg, smallWebp, webpWithOversizedFrame } from "../test/media-fixtures.js";
+import { validateAttachment } from "./attachment-validation.js";
+import { minimalPdf, onePixelPng, pngWithDimensions, smallJpeg, smallWebp, webpWithOversizedFrame } from "../test/media-fixtures.js";
+
+it("accepts a PNG carrying trailing bytes after IEND but still rejects a corrupt stream", () => {
+    const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
+    // An in-place rewrite that does not truncate leaves real, decodable images with
+    // trailing data; requiring IEND at exact EOF rejected them outright.
+    const padded = Buffer.concat([onePixelPng(), Buffer.alloc(17050)]);
+    assert.deepEqual(validateAttachment(new Uint8Array(padded), maxPixels), { status: "ok", mimeType: "image/png", width: 1, height: 1 });
+    const corrupt = onePixelPng();
+    corrupt[corrupt.length - 1] ^= 1;
+    const result = validateAttachment(new Uint8Array(corrupt), maxPixels);
+    assert.equal(result.status === "error" && result.code, "MALFORMED_CONTENT");
+    const truncated = onePixelPng().subarray(0, 20);
+    const cut = validateAttachment(new Uint8Array(truncated), maxPixels);
+    assert.equal(cut.status === "error" && cut.code, "MALFORMED_CONTENT");
+});
+
+it("rejects an image wider or taller than the client accepts", () => {
+    const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
+    for (const [width, height] of [[8001, 10], [10, 8001]] as const) {
+        const result = validateAttachment(new Uint8Array(pngWithDimensions(width, height)), maxPixels);
+        assert.equal(result.status === "error" && result.code, "DIMENSION_LIMIT", `${width}x${height}`);
+    }
+    // At the per-side limit and inside the pixel budget, the image is still served.
+    assert.equal(validateAttachment(new Uint8Array(pngWithDimensions(8000, 4000)), maxPixels).status, "ok");
+});
+
+it("keeps the default byte limits under the client's base64 ceilings", () => {
+    const base64Bytes = (raw: number) => 4 * Math.ceil(raw / 3);
+    // The Claude API rejects an image over 10 MB base64 outright, and a PDF shares the
+    // 32 MB request budget with the conversation, so raw defaults must leave room.
+    assert.ok(base64Bytes(DEFAULT_ATTACHMENT_LIMITS.imageMaxBytes) < 10_000_000);
+    assert.ok(base64Bytes(DEFAULT_ATTACHMENT_LIMITS.pdfMaxBytes) < 32_000_000 / 2);
+});
 
 it("reads an image embed and a PDF through tool and resource content without changing bytes", async () => {
     const root = await mkdtemp(join(tmpdir(), "attachment-read-"));
@@ -63,6 +97,43 @@ it("reads an image embed and a PDF through tool and resource content without cha
             assert.deepEqual([result.structuredContent.result.width, result.structuredContent.result.height], [2, 2]);
             assert.deepEqual(Buffer.from(result.content[1].data, "base64"), bytes);
         }
+    } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+it("resolves a concrete target without enumerating the vault, and still falls back when it must", async () => {
+    const root = await mkdtemp(join(tmpdir(), "attachment-fastpath-"));
+    try {
+        await mkdir(join(root, "notes"));
+        await mkdir(join(root, "assets"));
+        await writeFile(join(root, "notes", "source.md"), "![[diagram.png]]");
+        await writeFile(join(root, "assets", "diagram.png"), onePixelPng());
+        const real = new LocalVault(root);
+        let enumerations = 0;
+        const vault: any = {
+            readVersioned: (path: string) => real.readVersioned(path),
+            attachmentExists: (path: string) => real.attachmentExists(path),
+            listAttachments: async () => { enumerations++; return real.listAttachments(); },
+        };
+        const source = { sourceNotePath: "notes/source.md" };
+
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "../assets/diagram.png", ...source }),
+            { status: "ok", path: "assets/diagram.png" });
+        assert.equal(enumerations, 0, "a concrete candidate must not scan the vault");
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "/assets/diagram.png", ...source }),
+            { status: "ok", path: "assets/diagram.png" });
+        assert.equal(enumerations, 0);
+
+        // A bare name genuinely needs the listing, and so does a differently-cased path.
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "diagram.png", ...source }),
+            { status: "ok", path: "assets/diagram.png" });
+        assert.equal(enumerations, 1);
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "../ASSETS/Diagram.PNG", ...source }),
+            { status: "ok", path: "assets/diagram.png" });
+        assert.equal(enumerations, 2, "a case-variant path must still fall back to the listing");
+
+        const missing = await resolveAttachmentPath(vault, { target: "../assets/absent.png", ...source });
+        assert.equal(missing.status, "error");
+        if (missing.status === "error") assert.equal(missing.error.code, "NOT_FOUND");
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 

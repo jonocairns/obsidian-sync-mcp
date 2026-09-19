@@ -37,6 +37,19 @@ it("reads a parenthesised link title without losing names that end in brackets",
     assert.deepEqual(extractNoteAttachments("![x](report (1).png (title))").map((found) => found.target), ["report (1).png"]);
 });
 
+it("reads an unmatched backtick as literal text, not an open code span", () => {
+    const targets = (markdown: string) => extractNoteAttachments(markdown).map((found) => found.target);
+    // A stray backtick used to latch the scanner into code mode for the rest of the note,
+    // so every later embed vanished while outgoingLinks still reported it.
+    assert.deepEqual(targets("Press the ` key.\n\n![[diagram.png]]"), ["diagram.png"]);
+    assert.deepEqual(targets("a ` b ![[image.png]]"), ["image.png"]);
+    assert.deepEqual(targets("Use ``code` now.\n\n![[a.png]]"), ["a.png"]);
+    assert.deepEqual(targets("# Heading with a ` tick\n\n![[after.png]]"), ["after.png"]);
+    // A run that does close still hides its contents, including a fence marker inside it.
+    assert.deepEqual(targets("`![[hidden.png]]` ![[real.png]]"), ["real.png"]);
+    assert.deepEqual(targets("``![[a.png]]`` ![[b.png]]"), ["b.png"]);
+});
+
 it("scans a long malformed line in linear time", () => {
     const scale = (length: number) => {
         const started = performance.now();

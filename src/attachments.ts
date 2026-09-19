@@ -12,9 +12,15 @@ export interface AttachmentLimits {
     maxPixels: number;
 }
 
+// Base64 inflates a payload by 4/3, and the client rejects what it cannot carry, so
+// these defaults are the raw sizes that still fit. 7 MiB encodes to ~9.79 MB, under
+// the Claude API's 10 MB per-image cap; 10 MiB encodes to ~13.98 MB, a manageable
+// share of the 32 MB request budget once conversation history is added. Both are
+// raised with ATTACHMENT_MAX_IMAGE_BYTES and ATTACHMENT_MAX_PDF_BYTES where a client
+// and deployment can take it.
 export const DEFAULT_ATTACHMENT_LIMITS: AttachmentLimits = {
-    imageMaxBytes: 10 * 1024 * 1024,
-    pdfMaxBytes: 20 * 1024 * 1024,
+    imageMaxBytes: 7 * 1024 * 1024,
+    pdfMaxBytes: 10 * 1024 * 1024,
     maxPixels: 40_000_000,
 };
 
@@ -89,6 +95,11 @@ export function parseAttachmentLimits(env: NodeJS.ProcessEnv): AttachmentLimits 
     };
 }
 
+/** Encodes in place. `Buffer.from(view)` would copy the whole attachment first. */
+function base64(bytes: Uint8Array): string {
+    return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+}
+
 export function attachmentUri(path: string, version: string): string {
     return `obsidian-attachment://vault/${Buffer.from(path).toString("base64url")}/${version}`;
 }
@@ -141,6 +152,20 @@ export async function resolveAttachmentPath(
             ? "SOURCE_NOTE_NOT_FOUND" : source.code === "INVALID_PATH" ? "INVALID_PATH" : "BACKEND_UNAVAILABLE";
         return error(code) as Extract<AttachmentResult, { status: "error" }>;
     }
+    // A concrete candidate is the documented common case, so probe it directly rather
+    // than enumerating the vault to case-fold a path already in hand. Enumeration still
+    // runs when no candidate exists, because that is what resolves a differently-cased
+    // or bare-name target.
+    if (candidatePaths.length > 0) {
+        const present: string[] = [];
+        for (const path of candidatePaths) {
+            if (!present.includes(path) && await vault.attachmentExists(path)) present.push(path);
+        }
+        if (present.length === 1) return { status: "ok", path: present[0] };
+        if (present.length > 1) {
+            return error("AMBIGUOUS", { candidates: present.sort() }) as Extract<AttachmentResult, { status: "error" }>;
+        }
+    }
     let paths: string[];
     try { paths = await vault.listAttachments(); }
     catch { return error("BACKEND_UNAVAILABLE") as Extract<AttachmentResult, { status: "error" }>; }
@@ -187,7 +212,7 @@ export function registerAttachmentTools(server: ViteMCP, vault: VaultBackend, li
             const read = await readValidatedAttachment(vault, path, limits);
             if (read.status === "error") throw new UserError(read.error.message);
             if (read.value.attachment.version !== version) throw new UserError("Attachment version changed; read it again through read_attachment.");
-            return { blob: Buffer.from(read.value.attachment.bytes).toString("base64"), mimeType: read.value.mimeType };
+            return { blob: base64(read.value.attachment.bytes), mimeType: read.value.mimeType };
         },
     });
 
@@ -212,7 +237,7 @@ export function registerAttachmentTools(server: ViteMCP, vault: VaultBackend, li
                 path: attachment.path, mimeType, size: attachment.size, version: attachment.version,
                 modified: new Date(attachment.mtime).toISOString(), uri, width, height,
             } };
-            const blob = Buffer.from(attachment.bytes).toString("base64");
+            const blob = base64(attachment.bytes);
             const binary = mimeType === "application/pdf"
                 ? { type: "resource" as const, resource: { uri, mimeType, blob } }
                 : { type: "image" as const, mimeType, data: blob };

@@ -72,6 +72,8 @@ export interface VaultBackend extends VersionedNoteBackend {
     readAttachment(path: string, maxBytes: number): Promise<AttachmentReadResult>;
     /** Vault-relative paths only; attachment content is never indexed. */
     listAttachments(): Promise<string[]>;
+    /** Metadata-only probe, so a known path never pays for a full vault enumeration. */
+    attachmentExists(path: string): Promise<boolean>;
     watchChanges?(callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void, indexedPaths?: () => readonly string[]): void;
     /** Catch up on changes, seeding tombstone identity from persisted index paths on restart. CouchDB only. */
     catchUp?(since: string, callback: (path: string, content: string | null, mtime?: number) => void, onBatch?: (since: string, processed: number) => Promise<void>, indexedPaths?: readonly string[]): Promise<string>;

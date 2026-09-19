@@ -176,6 +176,13 @@ export class LocalVault implements VaultBackend {
         }
     }
 
+    async attachmentExists(path: string): Promise<boolean> {
+        if (!validAttachmentPath(path)) return false;
+        try {
+            return (await stat(await this.safePath(path, true))).isFile();
+        } catch { return false; }
+    }
+
     async listAttachments(): Promise<string[]> {
         const paths: string[] = [];
         for await (const path of glob("**/*", { cwd: this.root })) {

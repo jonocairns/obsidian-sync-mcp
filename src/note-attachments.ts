@@ -98,6 +98,46 @@ function indexLine(input: string, start: number): LineIndex {
     return { start, end, match, wikiClose };
 }
 
+interface BacktickRuns {
+    /** Start offset of each maximal unescaped backtick run. */
+    starts: Int32Array;
+    /** Backtick count of the run at the same index. */
+    lengths: Int32Array;
+    /** Index of the next run of equal length, or -1 when this run cannot be closed. */
+    nextSame: Int32Array;
+    /** Run index by start offset, so the scanner can tell a run start from its interior. */
+    index: Map<number, number>;
+}
+
+/**
+ * Index every unescaped backtick run in one pass. A code span closes only on a run
+ * of exactly equal length, so an unmatched run is literal text rather than an open
+ * span that swallows the rest of the note. Resolving that by lookup keeps the scan
+ * linear instead of rescanning ahead from each candidate.
+ */
+function indexBacktickRuns(input: string): BacktickRuns {
+    const starts: number[] = [];
+    const lengths: number[] = [];
+    for (let cursor = 0, escaped = false; cursor < input.length; cursor++) {
+        if (escaped) { escaped = false; continue; }
+        if (input[cursor] === "\\") { escaped = true; continue; }
+        if (input[cursor] !== "`") continue;
+        const length = runLength(input, cursor, "`");
+        starts.push(cursor);
+        lengths.push(length);
+        cursor += length - 1;
+    }
+    const nextSame = new Int32Array(starts.length).fill(-1);
+    const pending = new Map<number, number>();
+    for (let i = starts.length - 1; i >= 0; i--) {
+        nextSame[i] = pending.get(lengths[i]) ?? -1;
+        pending.set(lengths[i], i);
+    }
+    const index = new Map<number, number>();
+    for (let i = 0; i < starts.length; i++) index.set(starts[i], i);
+    return { starts: Int32Array.from(starts), lengths: Int32Array.from(lengths), nextSame, index };
+}
+
 function wikiAt(input: string, offset: number, kind: NoteAttachmentReference["kind"], line: LineIndex):
     { end: number; value: NoteAttachmentReference | null } | null {
     const start = offset + (kind === "embed" ? 3 : 2);
@@ -190,7 +230,7 @@ export function extractNoteAttachments(markdown: string): NoteAttachmentReferenc
     const found: NoteAttachmentReference[] = [];
     const seen = new Set<string>();
     let fence: { marker: string; length: number } | null = null;
-    let inlineTicks = 0;
+    const runs = indexBacktickRuns(markdown);
     let lineStart = true;
     let line: LineIndex | null = null;
     const lineFor = (offset: number): LineIndex => {
@@ -209,7 +249,7 @@ export function extractNoteAttachments(markdown: string): NoteAttachmentReferenc
                 cursor = nextLine(markdown, cursor);
                 continue;
             }
-            if (!inlineTicks && marker) {
+            if (marker) {
                 fence = marker;
                 cursor = nextLine(markdown, cursor);
                 continue;
@@ -220,13 +260,16 @@ export function extractNoteAttachments(markdown: string): NoteAttachmentReferenc
         if (character === "\n") { cursor++; lineStart = true; continue; }
         if (character === "\\") { cursor += markdown[cursor + 1] === "\n" ? 1 : 2; continue; }
         if (character === "`") {
-            const ticks = runLength(markdown, cursor, "`");
-            if (!inlineTicks) inlineTicks = ticks;
-            else if (inlineTicks === ticks) inlineTicks = 0;
-            cursor += ticks;
+            const run = runs.index.get(cursor);
+            if (run === undefined) { cursor++; continue; }
+            const close = runs.nextSame[run];
+            if (close < 0) { cursor += runs.lengths[run]; continue; }
+            // A closed span is skipped whole, so a fence marker inside it is never read
+            // as a fence and the lines it covers are never scanned for links.
+            cursor = runs.starts[close] + runs.lengths[close];
+            lineStart = cursor === 0 || markdown[cursor - 1] === "\n";
             continue;
         }
-        if (inlineTicks) { cursor++; continue; }
         if (markdown.startsWith("<!--", cursor)) {
             const end = markdown.indexOf("-->", cursor + 4);
             cursor = end < 0 ? markdown.length : end + 3;

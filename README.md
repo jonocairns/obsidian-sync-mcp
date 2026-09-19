@@ -250,8 +250,13 @@ base64. The server does not describe images, render PDFs or extract PDF text.
 Whether a client passes PDF resources to its model depends on that client.
 
 The supported types are checked from bytes, including image dimensions and basic
-PDF structure. Reads are limited to 10 MiB for images and 20 MiB for PDFs by
-default. Attachment reads use the existing vault-wide read access; `READ_ONLY`
+PDF structure. Reads are limited to 7 MiB for images and 10 MiB for PDFs by
+default, and an image to 8000 px on either side. Those defaults are chosen so the
+base64-encoded payload stays inside the limits a client will accept — an image over
+10 MB base64, or wider or taller than 8000 px, is rejected by the Claude API — so
+raising them can turn a successful read into a client-side failure. Trailing bytes
+after a PNG's `IEND` are accepted, since files rewritten in place still decode
+everywhere. Attachment reads use the existing vault-wide read access; `READ_ONLY`
 still permits them. Attachment creation, replacement and deletion are not exposed.
 
 The six single-note tools return both deterministic text and validated
@@ -441,9 +446,9 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `MCP_ALLOWED_HOSTS` | Optional | — | Comma-separated extra hostnames (e.g. `192.168.1.5,mybox.local`). Browser Origin hostnames must be local or listed here, including with bearer authentication. In no-auth mode, the request Host must also be local or listed to block DNS rebinding. Localhost and loopback addresses are always allowed, on any port. Clients without an Origin header do not need a browser-origin entry. |
 | `DATA_DIR` | Optional | `~/.obsidian-mcp` | Directory for the SQLite search index and auth tokens |
 | `FULL_TEXT_SEARCH` | Optional | `auto` | Disk-backed SQLite full-text search: `auto` and `true` enable it; `false` disables it. When `COUCHDB_PASSPHRASE` is set, the local index is encrypted with a backend-specific derived key. Note: `false` also disables index persistence — metadata is rebuilt in memory on every startup, and CouchDB mode replays the full `_changes` feed each time. |
-| `ATTACHMENT_MAX_IMAGE_BYTES` | Optional | `10485760` | Maximum raw bytes returned for a PNG, JPEG, or WebP. |
-| `ATTACHMENT_MAX_PDF_BYTES` | Optional | `20971520` | Maximum raw bytes returned for a PDF. |
-| `ATTACHMENT_MAX_PIXELS` | Optional | `40000000` | Maximum width × height for an image; either dimension is also capped at 16384. |
+| `ATTACHMENT_MAX_IMAGE_BYTES` | Optional | `7340032` | Maximum raw bytes returned for a PNG, JPEG, or WebP. The default encodes to ~9.79 MB base64, under the Claude API's 10 MB per-image cap. |
+| `ATTACHMENT_MAX_PDF_BYTES` | Optional | `10485760` | Maximum raw bytes returned for a PDF. The default encodes to ~13.98 MB base64, leaving room in a 32 MB request for conversation history. |
+| `ATTACHMENT_MAX_PIXELS` | Optional | `40000000` | Maximum width × height for an image; either dimension is also capped at 8000, the largest the Claude API accepts. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |

@@ -343,6 +343,12 @@ export class Vault implements VaultBackend {
         }
     }
 
+    async attachmentExists(path: string): Promise<boolean> {
+        if (!validAttachmentPath(path)) return false;
+        try { return await this.manipulator.entryExists(path as FilePathWithPrefix); }
+        catch { return false; }
+    }
+
     async listAttachments(): Promise<string[]> {
         const paths: string[] = [];
         for await (const entry of this.manipulator.enumerateAllNormalDocs({ metaOnly: true })) {

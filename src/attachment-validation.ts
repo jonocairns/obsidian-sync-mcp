@@ -17,11 +17,14 @@ function crc32(bytes: Uint8Array): number {
     return (crc ^ 0xffffffff) >>> 0;
 }
 
+/** The Claude API rejects an image whose width or height exceeds this, so reading one is wasted work. */
+const MAX_IMAGE_DIMENSION = 8000;
+
 function checkDimensions(width: number, height: number, maxPixels: number): AttachmentValidation {
     if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
         return { status: "error", code: "MALFORMED_CONTENT" };
     }
-    if (width > 16384 || height > 16384 || width * height > maxPixels) {
+    if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || width * height > maxPixels) {
         return { status: "error", code: "DIMENSION_LIMIT" };
     }
     return { status: "ok", mimeType: "image/png", width, height };
@@ -49,7 +52,11 @@ function png(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
         }
         if (kind === "acTL" || kind === "fcTL" || kind === "fdAT") return { status: "error", code: "UNSUPPORTED_CONTENT" };
         if (kind === "IDAT") sawIdat = true;
-        if (kind === "IEND") { sawIend = length === 0 && offset + 12 === bytes.length; break; }
+        // Trailing bytes after IEND are accepted. An in-place rewrite that did not
+        // truncate leaves them behind, every decoder stops at IEND, and the chunk
+        // CRCs above already proved the stream. Requiring IEND at exact EOF rejected
+        // such files outright.
+        if (kind === "IEND") { sawIend = length === 0; break; }
         offset += length + 12;
     }
     if (!sawIdat || !sawIend) return { status: "error", code: "MALFORMED_CONTENT" };

@@ -29,6 +29,19 @@ export function onePixelPng(rgb: [number, number, number] = [255, 0, 0]): Buffer
         pngChunk("IEND", Buffer.alloc(0)),
     ]);
 }
+/** A structurally valid PNG whose IHDR declares `width`x`height`; the pixel data is not decoded. */
+export function pngWithDimensions(width: number, height: number): Buffer {
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(width, 0);
+    ihdr.writeUInt32BE(height, 4);
+    ihdr[8] = 8; ihdr[9] = 2;
+    return Buffer.concat([
+        Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+        pngChunk("IHDR", ihdr),
+        pngChunk("IDAT", deflateSync(Buffer.from([0, 0, 0, 0]))),
+        pngChunk("IEND", Buffer.alloc(0)),
+    ]);
+}
 export function minimalPdf(): Buffer {
     let text = "%PDF-1.4\n";
     const offsets = [0];
