@@ -167,6 +167,30 @@ it("resolves a concrete target without enumerating the vault, and still falls ba
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+it("keeps a percent-encoded hash in an embed target, and ignores directories named like attachments", async () => {
+    const root = await mkdtemp(join(tmpdir(), "attachment-target-"));
+    try {
+        await mkdir(join(root, "assets"));
+        await mkdir(join(root, "logo.png"));                       // a DIRECTORY, not a file
+        await writeFile(join(root, "assets", "logo.png"), onePixelPng());
+        await writeFile(join(root, "assets", "report#draft.png"), onePixelPng());
+        await writeFile(join(root, "source.md"), "![[logo.png]]");
+        const vault = new LocalVault(root);
+
+        // A directory used to enter the listing and shadow the real file as AMBIGUOUS.
+        assert.deepEqual(await vault.listAttachments(), ["assets/logo.png", "assets/report#draft.png"]);
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "logo.png", sourceNotePath: "source.md" }),
+            { status: "ok", path: "assets/logo.png" });
+
+        // Decoding before splitting truncated the name at "%23" and failed as INVALID_PATH.
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "![x](assets/report%23draft.png)", sourceNotePath: "source.md" }),
+            { status: "ok", path: "assets/report#draft.png" });
+        // A real fragment on an embed target is still stripped.
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "![[assets/logo.png#page=2]]", sourceNotePath: "source.md" }),
+            { status: "ok", path: "assets/logo.png" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 it("rejects ambiguous, missing, traversal, oversized, and malformed attachments", async () => {
     const root = await mkdtemp(join(tmpdir(), "attachment-reject-"));
     try {

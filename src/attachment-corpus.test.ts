@@ -48,6 +48,8 @@ const corpus: [name: string, bytes: Buffer, expected: Expected][] = [
     ["webp: two VP8L chunks", webpFile([["VP8L", vp8lPayload(16000, 16000)], ["VP8L", vp8lPayload(2, 2)]]), "MALFORMED_CONTENT"],
     ["webp: VP8 then VP8L", webpFile([["VP8 ", vp8Payload(16000, 16000)], ["VP8L", vp8lPayload(2, 2)]]), "MALFORMED_CONTENT"],
     ["webp: VP8L then VP8", webpFile([["VP8L", vp8lPayload(16000, 16000)], ["VP8 ", vp8Payload(2, 2)]]), "MALFORMED_CONTENT"],
+    ["webp: two VP8X chunks", webpFile([["VP8X", vp8xPayload(16000, 16000)], ["VP8X", vp8xPayload(1, 1)], ["VP8L", vp8lPayload(1, 1)]]), "MALFORMED_CONTENT"],
+    ["webp: VP8X after the bitstream", webpFile([["VP8L", vp8lPayload(2, 2)], ["VP8X", vp8xPayload(2, 2)]]), "MALFORMED_CONTENT"],
     ["webp: no bitstream chunk", webpFile([["VP8X", vp8xPayload(2, 2)]]), "MALFORMED_CONTENT"],
     ["webp: unparseable bitstream chunk", webpFile([["VP8L", Buffer.alloc(21)]]), "MALFORMED_CONTENT"],
     ["webp: ANIM chunk", webpFile([["VP8X", vp8xPayload(2, 2)], ["ANIM", Buffer.alloc(6)], ["VP8L", vp8lPayload(2, 2)]]), "UNSUPPORTED_CONTENT"],

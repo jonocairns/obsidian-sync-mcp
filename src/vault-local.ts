@@ -187,8 +187,13 @@ export class LocalVault implements VaultBackend {
         const paths: string[] = [];
         for await (const path of glob("**/*", { cwd: this.root })) {
             if (!validAttachmentPath(path)) continue;
-            // A glob may traverse a symlink. safePath proves the target stays in the vault.
-            try { await this.safePath(path, true); paths.push(path); } catch { /* skip unsafe entries */ }
+            // A glob may traverse a symlink, and yields directories too. safePath proves
+            // the target stays in the vault; the stat keeps a directory named like an
+            // attachment out of the listing, where it would shadow the real file as an
+            // ambiguous candidate and then fail every read.
+            try {
+                if ((await stat(await this.safePath(path, true))).isFile()) paths.push(path);
+            } catch { /* skip unsafe or unreadable entries */ }
         }
         return paths.sort((a, b) => a.localeCompare(b));
     }

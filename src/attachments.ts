@@ -114,11 +114,12 @@ function normalizeTarget(target: string): string {
     const trimmed = target.trim();
     const wiki = /^!\[\[([^\]]+)\]\]$/.exec(trimmed);
     const markdown = /^!\[[^\]]*\]\(([^)]+)\)$/.exec(trimmed);
-    let value = wiki?.[1]?.split("|")[0] ?? markdown?.[1] ?? trimmed;
-    if (markdown) {
-        try { value = decodeURIComponent(value); } catch { return ""; }
-    }
-    return value.split("#")[0].trim();
+    const value = wiki?.[1]?.split("|")[0] ?? markdown?.[1] ?? trimmed;
+    // Split the fragment before decoding: decoding first turns a "%23" inside a
+    // filename into a separator and truncates the name, as it did in the note scanner.
+    const path = value.split("#")[0];
+    if (!markdown) return path.trim();
+    try { return decodeURIComponent(path).trim(); } catch { return ""; }
 }
 
 export async function resolveAttachmentPath(

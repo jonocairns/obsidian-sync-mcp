@@ -75,3 +75,14 @@ it("keeps a percent-encoded hash in the filename instead of reading it as a frag
     ]);
     assert.deepEqual(extractNoteAttachments("![x](../assets/ui%20state.webp)").map((f) => f.target), ["../assets/ui state.webp"]);
 });
+
+it("reads a quoted Markdown title without losing names that contain quotes or brackets", () => {
+    const targets = (markdown: string) => extractNoteAttachments(markdown).map((found) => found.target);
+    // A parenthesis inside a quoted title is text; treating it as structure dropped the link.
+    assert.deepEqual(targets('[scan](scan.pdf "title (")'), ["scan.pdf"]);
+    assert.deepEqual(targets("[scan](scan.pdf 'title (')"), ["scan.pdf"]);
+    // A title opens only after whitespace, so an apostrophe inside a name is still a name.
+    assert.deepEqual(targets("![x](jono's file.png)"), ["jono's file.png"]);
+    assert.deepEqual(targets("![x](a(b)c.png)"), ["a(b)c.png"]);
+    assert.deepEqual(targets("![x](report (1).png)"), ["report (1).png"]);
+});

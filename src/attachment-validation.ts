@@ -95,6 +95,7 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
     let canvasWidth = 0, canvasHeight = 0;
     let frameWidth = 0, frameHeight = 0;
     let hasFrame = false;
+    let chunkIndex = 0;
     while (offset + 8 <= bytes.length) {
         const kind = ascii(bytes, offset, 4);
         const length = le32(bytes, offset + 4);
@@ -102,6 +103,10 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
         if (data + length > bytes.length) return { status: "error", code: "MALFORMED_CONTENT" };
         if (kind === "ANIM" || kind === "ANMF") return { status: "error", code: "UNSUPPORTED_CONTENT" };
         if (kind === "VP8X") {
+            // The extended header occurs once, as the very first chunk. A repeat would
+            // overwrite the canvas, letting an oversized first declaration pass as a
+            // later small one, exactly as a second bitstream chunk once did.
+            if (chunkIndex !== 0) return { status: "error", code: "MALFORMED_CONTENT" };
             if (length !== 10 || (bytes[data] & 0x02) !== 0) return { status: "error", code: "UNSUPPORTED_CONTENT" };
             canvasWidth = le24(bytes, data + 4) + 1; canvasHeight = le24(bytes, data + 7) + 1;
         } else if (kind === "VP8 " || kind === "VP8L") {
@@ -121,6 +126,7 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
             }
         }
         offset = data + length + (length & 1);
+        chunkIndex++;
     }
     if (offset !== bytes.length || !hasFrame) return { status: "error", code: "MALFORMED_CONTENT" };
     // The container requires every frame to fit inside the declared canvas. A small

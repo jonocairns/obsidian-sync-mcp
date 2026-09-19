@@ -232,12 +232,21 @@ function markdownAt(input: string, offset: number, kind: NoteAttachmentReference
     let cursor = destinationStart;
     let parentheses = 1;
     let angle = false;
+    let quote = "";
     for (; cursor < limit; cursor++) {
-        if (input[cursor] === "\\") { cursor++; continue; }
-        if (input[cursor] === "<") angle = true;
-        else if (input[cursor] === ">") angle = false;
-        else if (!angle && input[cursor] === "(") parentheses++;
-        else if (!angle && input[cursor] === ")" && --parentheses === 0) break;
+        const character = input[cursor];
+        if (character === "\\") { cursor++; continue; }
+        // A parenthesis inside a quoted title is text, not structure, so `(url "a (")`
+        // must still close. A title is separated from the destination by whitespace,
+        // which is also what keeps an apostrophe in a name like `jono's file.png` from
+        // opening a title that never closes.
+        if (quote) { if (character === quote) quote = ""; continue; }
+        if (character === "<") angle = true;
+        else if (character === ">") angle = false;
+        else if (angle) continue;
+        else if ((character === '"' || character === "'") && /\s/.test(input[cursor - 1] ?? "")) quote = character;
+        else if (character === "(") parentheses++;
+        else if (character === ")" && --parentheses === 0) break;
     }
     if (parentheses !== 0) return null;
     const destination = markdownDestination(input.slice(destinationStart, cursor));
