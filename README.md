@@ -249,15 +249,21 @@ path, MIME type, raw byte size, opaque version, modification time and URI, but n
 base64. The server does not describe images, render PDFs or extract PDF text.
 Whether a client passes PDF resources to its model depends on that client.
 
-The supported types are checked from bytes, including image dimensions and basic
-PDF structure. Reads are limited to 7 MiB for images and 10 MiB for PDFs by
-default, and an image to 8000 px on either side. Those defaults are chosen so the
-base64-encoded payload stays inside the limits a client will accept — an image over
-10 MB base64, or wider or taller than 8000 px, is rejected by the Claude API — so
-raising them can turn a successful read into a client-side failure. Trailing bytes
-after a PNG's `IEND` are accepted, since files rewritten in place still decode
-everywhere. Attachment reads use the existing vault-wide read access; `READ_ONLY`
-still permits them. Attachment creation, replacement and deletion are not exposed.
+The type is identified from the bytes, not the extension, and the container is
+checked for integrity — PNG chunk CRCs, a PDF trailer. Images are not measured and
+animation is not rejected: how large or how animated a file may be is the client's
+limit to enforce, and the server never decodes an image. So an image wider than the
+Claude API's 8000 px maximum, or an animated GIF-like WebP, is read and sent, and
+the API refuses or flattens it. Trailing bytes after a PNG's `IEND` are accepted,
+since files rewritten in place still decode everywhere.
+
+Reads are limited to 7 MiB for images and 10 MiB for PDFs by default. That byte cap
+is the real bound on a read, and the defaults are chosen so the base64-encoded
+payload stays inside what a client accepts — over 10 MB base64 the Claude API
+rejects an image outright — so raising them can turn a successful read into a
+client-side failure. Attachment reads use the existing vault-wide read access;
+`READ_ONLY` still permits them. Attachment creation, replacement and deletion are
+not exposed.
 
 The six single-note tools return both deterministic text and validated
 `structuredContent` under an advertised MCP `outputSchema`. The structured
@@ -448,7 +454,6 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `FULL_TEXT_SEARCH` | Optional | `auto` | Disk-backed SQLite full-text search: `auto` and `true` enable it; `false` disables it. When `COUCHDB_PASSPHRASE` is set, the local index is encrypted with a backend-specific derived key. Note: `false` also disables index persistence — metadata is rebuilt in memory on every startup, and CouchDB mode replays the full `_changes` feed each time. |
 | `ATTACHMENT_MAX_IMAGE_BYTES` | Optional | `7340032` | Maximum raw bytes returned for a PNG, JPEG, or WebP. The default encodes to ~9.79 MB base64, under the Claude API's 10 MB per-image cap. |
 | `ATTACHMENT_MAX_PDF_BYTES` | Optional | `10485760` | Maximum raw bytes returned for a PDF. The default encodes to ~13.98 MB base64, leaving room in a 32 MB request for conversation history. |
-| `ATTACHMENT_MAX_PIXELS` | Optional | `40000000` | Maximum width × height for an image; either dimension is also capped at 8000, the largest the Claude API accepts. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
 | `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |

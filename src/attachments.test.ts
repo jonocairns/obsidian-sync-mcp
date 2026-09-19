@@ -10,26 +10,16 @@ import { validateAttachment } from "./attachment-validation.js";
 import { minimalPdf, onePixelPng, paddedPdf, pngWithDimensions, smallJpeg, smallWebp, webpWithOversizedFrame, webpWithTwoFrames } from "../test/media-fixtures.js";
 
 it("accepts a PNG carrying trailing bytes after IEND but still rejects a corrupt stream", () => {
-    const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
     // An in-place rewrite that does not truncate leaves real, decodable images with
     // trailing data; requiring IEND at exact EOF rejected them outright.
     const padded = Buffer.concat([onePixelPng(), Buffer.alloc(17050)]);
-    assert.deepEqual(validateAttachment(new Uint8Array(padded), maxPixels), { status: "ok", mimeType: "image/png", width: 1, height: 1 });
+    assert.deepEqual(validateAttachment(new Uint8Array(padded)), { status: "ok", mimeType: "image/png" });
     const corrupt = onePixelPng();
     corrupt[corrupt.length - 1] ^= 1;
-    const result = validateAttachment(new Uint8Array(corrupt), maxPixels);
+    const result = validateAttachment(new Uint8Array(corrupt));
     assert.equal(result.status === "error" && result.code, "MALFORMED_CONTENT");
-    const truncated = onePixelPng().subarray(0, 20);
-    const cut = validateAttachment(new Uint8Array(truncated), maxPixels);
+    const cut = validateAttachment(new Uint8Array(onePixelPng().subarray(0, 20)));
     assert.equal(cut.status === "error" && cut.code, "MALFORMED_CONTENT");
-});
-
-it("rejects a still WebP carrying more than one bitstream chunk", () => {
-    // Only the last VP8/VP8L was measured, so an oversized frame could hide behind a
-    // small trailing one and skip the dimension and pixel budgets entirely.
-    const result = validateAttachment(new Uint8Array(webpWithTwoFrames()), DEFAULT_ATTACHMENT_LIMITS.maxPixels);
-    assert.equal(result.status === "error" && result.code, "MALFORMED_CONTENT");
-    assert.equal(validateAttachment(new Uint8Array(smallWebp), DEFAULT_ATTACHMENT_LIMITS.maxPixels).status, "ok");
 });
 
 it("bounds the read by the largest limit so the extension cannot pre-empt the sniffed type", async () => {
@@ -54,14 +44,15 @@ it("bounds the read by the largest limit so the extension cannot pre-empt the sn
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-it("rejects an image wider or taller than the client accepts", () => {
-    const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
-    for (const [width, height] of [[8001, 10], [10, 8001]] as const) {
-        const result = validateAttachment(new Uint8Array(pngWithDimensions(width, height)), maxPixels);
-        assert.equal(result.status === "error" && result.code, "DIMENSION_LIMIT", `${width}x${height}`);
+it("identifies an image without measuring or judging it", () => {
+    // Dimensions and animation are the client's business; four review rounds found four
+    // ways to measure the wrong frame, and the byte cap is what actually bounds a read.
+    for (const bytes of [pngWithDimensions(20000, 20000), webpWithTwoFrames(), webpWithOversizedFrame()]) {
+        assert.equal(validateAttachment(new Uint8Array(bytes)).status, "ok");
     }
-    // At the per-side limit and inside the pixel budget, the image is still served.
-    assert.equal(validateAttachment(new Uint8Array(pngWithDimensions(8000, 4000)), maxPixels).status, "ok");
+    const result = validateAttachment(new Uint8Array(pngWithDimensions(20000, 20000)));
+    assert.equal(result.status === "ok" && result.mimeType, "image/png");
+    assert.equal("width" in result, false, "the result must not carry dimensions");
 });
 
 it("keeps the default byte limits under the client's base64 ceilings", () => {
@@ -95,7 +86,6 @@ it("reads an image embed and a PDF through tool and resource content without cha
         assert.equal(imageResult.structuredContent.status, "ok", JSON.stringify(imageResult.structuredContent));
         assert.equal(attachmentResultSchema.safeParse(imageResult.structuredContent).success, true);
         assert.equal(imageResult.structuredContent.result.mimeType, "image/png");
-        assert.deepEqual([imageResult.structuredContent.result.width, imageResult.structuredContent.result.height], [1, 1]);
         assert.equal(imageResult.content[1].type, "image");
         assert.deepEqual(Buffer.from(imageResult.content[1].data, "base64"), image);
         const [id, version] = imageResult.structuredContent.result.uri.replace("obsidian-attachment://vault/", "").split("/");
@@ -124,7 +114,6 @@ it("reads an image embed and a PDF through tool and resource content without cha
             await writeFile(join(root, "assets", name), bytes);
             const result = await call({ path: `assets/${name}` });
             assert.equal(result.structuredContent.result.mimeType, mimeType);
-            assert.deepEqual([result.structuredContent.result.width, result.structuredContent.result.height], [2, 2]);
             assert.deepEqual(Buffer.from(result.content[1].data, "base64"), bytes);
         }
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -221,20 +210,12 @@ it("rejects ambiguous, missing, traversal, oversized, and malformed attachments"
         const malformed = await readValidatedAttachment(vault, "bad.pdf", DEFAULT_ATTACHMENT_LIMITS);
         assert.equal(malformed.status, "error");
         if (malformed.status === "error") assert.equal(malformed.error.code, "MALFORMED_CONTENT");
-        const dimensions = await readValidatedAttachment(vault, "one/same.png", { ...DEFAULT_ATTACHMENT_LIMITS, maxPixels: 0 });
-        assert.equal(dimensions.status, "error");
-        if (dimensions.status === "error") assert.equal(dimensions.error.code, "DIMENSION_LIMIT");
         const corruptPng = onePixelPng();
         corruptPng[corruptPng.length - 1] ^= 1;
         await writeFile(join(root, "corrupt.png"), corruptPng);
         const corrupt = await readValidatedAttachment(vault, "corrupt.png", DEFAULT_ATTACHMENT_LIMITS);
         assert.equal(corrupt.status, "error");
         if (corrupt.status === "error") assert.equal(corrupt.error.code, "MALFORMED_CONTENT");
-        // A VP8X canvas must not understate the frame and slip past the pixel budget.
-        await writeFile(join(root, "lying-canvas.webp"), webpWithOversizedFrame());
-        const lyingCanvas = await readValidatedAttachment(vault, "lying-canvas.webp", DEFAULT_ATTACHMENT_LIMITS);
-        assert.equal(lyingCanvas.status, "error");
-        if (lyingCanvas.status === "error") assert.equal(lyingCanvas.error.code, "MALFORMED_CONTENT");
         await writeFile(join(root, "unsupported.png"), Buffer.from("GIF89a"));
         const unsupported = await readValidatedAttachment(vault, "unsupported.png", DEFAULT_ATTACHMENT_LIMITS);
         assert.equal(unsupported.status, "error");

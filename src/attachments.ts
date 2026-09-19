@@ -9,7 +9,6 @@ import type { VaultBackend, VersionedAttachment } from "./vault-backend.js";
 export interface AttachmentLimits {
     imageMaxBytes: number;
     pdfMaxBytes: number;
-    maxPixels: number;
 }
 
 // Base64 inflates a payload by 4/3, and the client rejects what it cannot carry, so
@@ -21,17 +20,16 @@ export interface AttachmentLimits {
 export const DEFAULT_ATTACHMENT_LIMITS: AttachmentLimits = {
     imageMaxBytes: 7 * 1024 * 1024,
     pdfMaxBytes: 10 * 1024 * 1024,
-    maxPixels: 40_000_000,
 };
 
 export type AttachmentErrorCode =
     | "INVALID_INPUT" | "INVALID_PATH" | "SOURCE_NOTE_NOT_FOUND" | "NOT_FOUND" | "AMBIGUOUS"
-    | "TOO_LARGE" | "UNSUPPORTED_CONTENT" | "MALFORMED_CONTENT" | "DIMENSION_LIMIT" | "BACKEND_UNAVAILABLE";
+    | "TOO_LARGE" | "UNSUPPORTED_CONTENT" | "MALFORMED_CONTENT" | "BACKEND_UNAVAILABLE";
 
 export type AttachmentResult =
     | { schemaVersion: "1.0.0"; status: "ok"; result: {
         path: string; mimeType: AttachmentMime; size: number; version: string; modified: string;
-        uri: string; width?: number; height?: number;
+        uri: string;
     } }
     | { schemaVersion: "1.0.0"; status: "error"; error: {
         code: AttachmentErrorCode; message: string; size?: number; maxBytes?: number;
@@ -44,13 +42,12 @@ export const attachmentResultSchema = z.discriminatedUnion("status", [
         result: z.object({
             path: z.string(), mimeType: z.enum(["image/png", "image/jpeg", "image/webp", "application/pdf"]),
             size: z.number().int().nonnegative(), version: z.string(), modified: z.string(), uri: z.string(),
-            width: z.number().int().positive().optional(), height: z.number().int().positive().optional(),
         }).strict(),
     }).strict(),
     z.object({
         schemaVersion: z.literal("1.0.0"), status: z.literal("error"),
         error: z.object({
-            code: z.enum(["INVALID_INPUT", "INVALID_PATH", "SOURCE_NOTE_NOT_FOUND", "NOT_FOUND", "AMBIGUOUS", "TOO_LARGE", "UNSUPPORTED_CONTENT", "MALFORMED_CONTENT", "DIMENSION_LIMIT", "BACKEND_UNAVAILABLE"]),
+            code: z.enum(["INVALID_INPUT", "INVALID_PATH", "SOURCE_NOTE_NOT_FOUND", "NOT_FOUND", "AMBIGUOUS", "TOO_LARGE", "UNSUPPORTED_CONTENT", "MALFORMED_CONTENT", "BACKEND_UNAVAILABLE"]),
             message: z.string(), size: z.number().int().nonnegative().optional(), maxBytes: z.number().int().positive().optional(),
             candidates: z.array(z.string()).optional(),
         }).strict(),
@@ -70,7 +67,6 @@ const messages: Record<AttachmentErrorCode, string> = {
     TOO_LARGE: "The attachment exceeds the configured byte limit.",
     UNSUPPORTED_CONTENT: "The attachment is not a supported PNG, JPEG, WebP, or PDF.",
     MALFORMED_CONTENT: "The attachment content is malformed.",
-    DIMENSION_LIMIT: "The image dimensions exceed the configured limit.",
     BACKEND_UNAVAILABLE: "The vault backend could not read the attachment.",
 };
 
@@ -91,7 +87,6 @@ export function parseAttachmentLimits(env: NodeJS.ProcessEnv): AttachmentLimits 
     return {
         imageMaxBytes: value("ATTACHMENT_MAX_IMAGE_BYTES", DEFAULT_ATTACHMENT_LIMITS.imageMaxBytes),
         pdfMaxBytes: value("ATTACHMENT_MAX_PDF_BYTES", DEFAULT_ATTACHMENT_LIMITS.pdfMaxBytes),
-        maxPixels: value("ATTACHMENT_MAX_PIXELS", DEFAULT_ATTACHMENT_LIMITS.maxPixels),
     };
 }
 
@@ -183,7 +178,7 @@ export async function resolveAttachmentPath(
     return { status: "ok", path: [...candidates][0] };
 }
 
-type ValidatedAttachment = { attachment: VersionedAttachment; mimeType: AttachmentMime; width?: number; height?: number };
+type ValidatedAttachment = { attachment: VersionedAttachment; mimeType: AttachmentMime };
 export async function readValidatedAttachment(
     vault: VaultBackend, path: string, limits: AttachmentLimits,
 ): Promise<{ status: "ok"; value: ValidatedAttachment } | Extract<AttachmentResult, { status: "error" }>> {
@@ -197,11 +192,11 @@ export async function readValidatedAttachment(
         if (read.code === "TOO_LARGE") return error("TOO_LARGE", { size: read.size, maxBytes }) as Extract<AttachmentResult, { status: "error" }>;
         return error(read.code === "NOTE_NOT_FOUND" ? "NOT_FOUND" : read.code) as Extract<AttachmentResult, { status: "error" }>;
     }
-    const validated = validateAttachment(read.attachment.bytes, limits.maxPixels);
+    const validated = validateAttachment(read.attachment.bytes);
     if (validated.status === "error") return error(validated.code) as Extract<AttachmentResult, { status: "error" }>;
     const actualLimit = validated.mimeType === "application/pdf" ? limits.pdfMaxBytes : limits.imageMaxBytes;
     if (read.attachment.size > actualLimit) return error("TOO_LARGE", { size: read.attachment.size, maxBytes: actualLimit }) as Extract<AttachmentResult, { status: "error" }>;
-    return { status: "ok", value: { attachment: read.attachment, mimeType: validated.mimeType, width: validated.width, height: validated.height } };
+    return { status: "ok", value: { attachment: read.attachment, mimeType: validated.mimeType } };
 }
 
 export function registerAttachmentTools(server: ViteMCP, vault: VaultBackend, limits: AttachmentLimits): void {
@@ -235,11 +230,11 @@ export function registerAttachmentTools(server: ViteMCP, vault: VaultBackend, li
             if (resolved.status === "error") return { content: [{ type: "text" as const, text: JSON.stringify(resolved) }], structuredContent: resolved, isError: true };
             const read = await readValidatedAttachment(vault, resolved.path, limits);
             if (read.status === "error") return { content: [{ type: "text" as const, text: JSON.stringify(read) }], structuredContent: read, isError: true };
-            const { attachment, mimeType, width, height } = read.value;
+            const { attachment, mimeType } = read.value;
             const uri = attachmentUri(attachment.path, attachment.version);
             const result: AttachmentResult = { schemaVersion: "1.0.0", status: "ok", result: {
                 path: attachment.path, mimeType, size: attachment.size, version: attachment.version,
-                modified: new Date(attachment.mtime).toISOString(), uri, width, height,
+                modified: new Date(attachment.mtime).toISOString(), uri,
             } };
             const blob = base64(attachment.bytes);
             const binary = mimeType === "application/pdf"

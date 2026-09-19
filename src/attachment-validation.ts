@@ -1,12 +1,25 @@
 export type AttachmentMime = "image/png" | "image/jpeg" | "image/webp" | "application/pdf";
 export type AttachmentValidation =
-    | { status: "ok"; mimeType: AttachmentMime; width?: number; height?: number }
-    | { status: "error"; code: "UNSUPPORTED_CONTENT" | "MALFORMED_CONTENT" | "DIMENSION_LIMIT" };
+    | { status: "ok"; mimeType: AttachmentMime }
+    | { status: "error"; code: "UNSUPPORTED_CONTENT" | "MALFORMED_CONTENT" };
+
+/**
+ * Establishes what a file *is* from its bytes, and that the container is intact. It
+ * deliberately does not measure the image or reject animation.
+ *
+ * Deriving dimensions meant parsing each format's variants — a VP8X canvas against a
+ * VP8/VP8L frame, across chunk orderings — and four review rounds found four separate
+ * ways to measure the wrong one, each letting an oversized image through while
+ * reporting a small size. The budget it fed was never load-bearing: the byte limit
+ * already bounds what is read and sent, nothing here ever decodes an image, and a file
+ * too large or too animated for the client is refused by the client, which is the
+ * component that actually knows its own limits. Removing the measurement removes the
+ * bug class outright; the cost is one wasted round trip on an image the API rejects.
+ */
 
 const PNG_SIGNATURE = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const ascii = (bytes: Uint8Array, start: number, length: number) => Buffer.from(bytes.subarray(start, start + length)).toString("latin1");
 const be32 = (bytes: Uint8Array, at: number) => (bytes[at] * 2 ** 24 + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3]) >>> 0;
-const le24 = (bytes: Uint8Array, at: number) => bytes[at] + (bytes[at + 1] << 8) + (bytes[at + 2] << 16);
 const le32 = (bytes: Uint8Array, at: number) => (bytes[at] + bytes[at + 1] * 256 + bytes[at + 2] * 65536 + bytes[at + 3] * 16777216) >>> 0;
 function crc32(bytes: Uint8Array): number {
     let crc = 0xffffffff;
@@ -17,148 +30,69 @@ function crc32(bytes: Uint8Array): number {
     return (crc ^ 0xffffffff) >>> 0;
 }
 
-/** The Claude API rejects an image whose width or height exceeds this, so reading one is wasted work. */
-const MAX_IMAGE_DIMENSION = 8000;
+const malformed = { status: "error", code: "MALFORMED_CONTENT" } as const;
 
-function checkDimensions(width: number, height: number, maxPixels: number): AttachmentValidation {
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
-    if (width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION || width * height > maxPixels) {
-        return { status: "error", code: "DIMENSION_LIMIT" };
-    }
-    return { status: "ok", mimeType: "image/png", width, height };
-}
-
-function png(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
-    if (bytes.length < 45 || be32(bytes, 8) !== 13 || ascii(bytes, 12, 4) !== "IHDR") {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
-    const dimensions = checkDimensions(be32(bytes, 16), be32(bytes, 20), maxPixels);
-    if (dimensions.status === "error") return dimensions;
+function png(bytes: Uint8Array): AttachmentValidation {
+    if (bytes.length < 45 || be32(bytes, 8) !== 13 || ascii(bytes, 12, 4) !== "IHDR") return malformed;
     const colourDepths: Record<number, number[]> = { 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] };
-    if (!colourDepths[bytes[25]]?.includes(bytes[24]) || bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] > 1) {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
+    if (!colourDepths[bytes[25]]?.includes(bytes[24]) || bytes[26] !== 0 || bytes[27] !== 0 || bytes[28] > 1) return malformed;
     let offset = 8;
     let sawIdat = false;
     let sawIend = false;
     while (offset + 12 <= bytes.length) {
         const length = be32(bytes, offset);
-        if (length > bytes.length - offset - 12) return { status: "error", code: "MALFORMED_CONTENT" };
+        if (length > bytes.length - offset - 12) return malformed;
         const kind = ascii(bytes, offset + 4, 4);
-        if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== be32(bytes, offset + 8 + length)) {
-            return { status: "error", code: "MALFORMED_CONTENT" };
-        }
-        if (kind === "acTL" || kind === "fcTL" || kind === "fdAT") return { status: "error", code: "UNSUPPORTED_CONTENT" };
+        if (crc32(bytes.subarray(offset + 4, offset + 8 + length)) !== be32(bytes, offset + 8 + length)) return malformed;
         if (kind === "IDAT") sawIdat = true;
         // Trailing bytes after IEND are accepted. An in-place rewrite that did not
         // truncate leaves them behind, every decoder stops at IEND, and the chunk
-        // CRCs above already proved the stream. Requiring IEND at exact EOF rejected
-        // such files outright.
+        // CRCs above already proved the stream.
         if (kind === "IEND") { sawIend = length === 0; break; }
         offset += length + 12;
     }
-    if (!sawIdat || !sawIend) return { status: "error", code: "MALFORMED_CONTENT" };
-    return dimensions;
+    return sawIdat && sawIend ? { status: "ok", mimeType: "image/png" } : malformed;
 }
 
-function jpeg(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
-    if (bytes.length < 6 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
-    let offset = 2;
-    while (offset + 4 <= bytes.length) {
-        if (bytes[offset] !== 0xff) return { status: "error", code: "MALFORMED_CONTENT" };
-        while (bytes[offset] === 0xff) offset++;
-        const marker = bytes[offset++];
-        if (marker === 0xda) break; // Start of entropy-coded image data.
-        if (marker === 0xd8 || marker === 0xd9 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
-        if (offset + 2 > bytes.length) return { status: "error", code: "MALFORMED_CONTENT" };
-        const length = (bytes[offset] << 8) | bytes[offset + 1];
-        if (length < 2 || offset + length > bytes.length) return { status: "error", code: "MALFORMED_CONTENT" };
-        if ([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf].includes(marker)) {
-            if (length < 7) return { status: "error", code: "MALFORMED_CONTENT" };
-            const result = checkDimensions((bytes[offset + 5] << 8) | bytes[offset + 6], (bytes[offset + 3] << 8) | bytes[offset + 4], maxPixels);
-            return result.status === "ok" ? { ...result, mimeType: "image/jpeg" } : result;
-        }
-        offset += length;
-    }
-    return { status: "error", code: "MALFORMED_CONTENT" };
+function jpeg(bytes: Uint8Array): AttachmentValidation {
+    // SOI plus a terminating EOI. Walking the segments only ever served to reach a
+    // frame header for its dimensions, which is no longer read.
+    return bytes.length >= 6 && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9
+        ? { status: "ok", mimeType: "image/jpeg" } : malformed;
 }
 
-function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
-    if (bytes.length < 30 || ascii(bytes, 8, 4) !== "WEBP" || le32(bytes, 4) + 8 !== bytes.length) {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
+function webp(bytes: Uint8Array): AttachmentValidation {
+    if (bytes.length < 20 || ascii(bytes, 8, 4) !== "WEBP" || le32(bytes, 4) + 8 !== bytes.length) return malformed;
+    // Walk the container only far enough to prove the chunks tile it exactly. The
+    // chunk *contents* are the decoder's business.
     let offset = 12;
-    let canvasWidth = 0, canvasHeight = 0;
-    let frameWidth = 0, frameHeight = 0;
-    let hasFrame = false;
-    let chunkIndex = 0;
     while (offset + 8 <= bytes.length) {
-        const kind = ascii(bytes, offset, 4);
         const length = le32(bytes, offset + 4);
-        const data = offset + 8;
-        if (data + length > bytes.length) return { status: "error", code: "MALFORMED_CONTENT" };
-        if (kind === "ANIM" || kind === "ANMF") return { status: "error", code: "UNSUPPORTED_CONTENT" };
-        if (kind === "VP8X") {
-            // The extended header occurs once, as the very first chunk. A repeat would
-            // overwrite the canvas, letting an oversized first declaration pass as a
-            // later small one, exactly as a second bitstream chunk once did.
-            if (chunkIndex !== 0) return { status: "error", code: "MALFORMED_CONTENT" };
-            if (length !== 10 || (bytes[data] & 0x02) !== 0) return { status: "error", code: "UNSUPPORTED_CONTENT" };
-            canvasWidth = le24(bytes, data + 4) + 1; canvasHeight = le24(bytes, data + 7) + 1;
-        } else if (kind === "VP8 " || kind === "VP8L") {
-            // A still WebP carries exactly one bitstream chunk. Measuring only the last
-            // would let an oversized frame hide behind a small one and skip the budget,
-            // so a second chunk is rejected on its kind, before it is parsed.
-            if (hasFrame) return { status: "error", code: "MALFORMED_CONTENT" };
-            hasFrame = true;
-            if (kind === "VP8 " && length >= 10 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
-                frameWidth = ((bytes[data + 7] << 8) | bytes[data + 6]) & 0x3fff;
-                frameHeight = ((bytes[data + 9] << 8) | bytes[data + 8]) & 0x3fff;
-            } else if (kind === "VP8L" && length >= 5 && bytes[data] === 0x2f) {
-                frameWidth = 1 + (bytes[data + 1] | ((bytes[data + 2] & 0x3f) << 8));
-                frameHeight = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0x0f) << 10));
-            } else {
-                return { status: "error", code: "MALFORMED_CONTENT" };
-            }
-        }
-        offset = data + length + (length & 1);
-        chunkIndex++;
+        if (offset + 8 + length > bytes.length) return malformed;
+        offset += 8 + length + (length & 1);
     }
-    if (offset !== bytes.length || !hasFrame) return { status: "error", code: "MALFORMED_CONTENT" };
-    // The container requires every frame to fit inside the declared canvas. A small
-    // VP8X canvas must not hide a larger frame from the pixel budget, so check both.
-    if (canvasWidth && (frameWidth > canvasWidth || frameHeight > canvasHeight)) {
-        return { status: "error", code: "MALFORMED_CONTENT" };
-    }
-    const frame = checkDimensions(frameWidth, frameHeight, maxPixels);
-    if (frame.status === "error") return frame;
-    const result = checkDimensions(canvasWidth || frameWidth, canvasHeight || frameHeight, maxPixels);
-    return result.status === "ok" ? { ...result, mimeType: "image/webp" } : result;
+    return offset === bytes.length ? { status: "ok", mimeType: "image/webp" } : malformed;
 }
 
 function pdf(bytes: Uint8Array): AttachmentValidation {
-    if (bytes.length < 30 || !/^%PDF-[12]\.[0-9]/.test(ascii(bytes, 0, 8))) return { status: "error", code: "MALFORMED_CONTENT" };
+    if (bytes.length < 30 || !/^%PDF-[12]\.[0-9]/.test(ascii(bytes, 0, 8))) return malformed;
     const tail = ascii(bytes, Math.max(0, bytes.length - 2048), Math.min(2048, bytes.length));
     const eof = tail.lastIndexOf("%%EOF");
     const xref = tail.lastIndexOf("startxref", eof);
-    if (eof < 0 || xref < 0 || tail.slice(eof + 5).trim().length > 0) return { status: "error", code: "MALFORMED_CONTENT" };
+    if (eof < 0 || xref < 0 || tail.slice(eof + 5).trim().length > 0) return malformed;
     const offsetMatch = /^startxref\s+(\d+)\s*$/.exec(tail.slice(xref, eof).trim());
-    if (!offsetMatch) return { status: "error", code: "MALFORMED_CONTENT" };
+    if (!offsetMatch) return malformed;
     const offset = Number(offsetMatch[1]);
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) return { status: "error", code: "MALFORMED_CONTENT" };
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset >= bytes.length) return malformed;
     const start = ascii(bytes, offset, Math.min(40, bytes.length - offset));
-    if (!start.startsWith("xref") && !/^\d+\s+\d+\s+obj\b/.test(start)) return { status: "error", code: "MALFORMED_CONTENT" };
+    if (!start.startsWith("xref") && !/^\d+\s+\d+\s+obj\b/.test(start)) return malformed;
     return { status: "ok", mimeType: "application/pdf" };
 }
 
-export function validateAttachment(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
-    if (bytes.length >= 8 && PNG_SIGNATURE.every((value, i) => bytes[i] === value)) return png(bytes, maxPixels);
-    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return jpeg(bytes, maxPixels);
-    if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 4) === "WEBP") return webp(bytes, maxPixels);
+export function validateAttachment(bytes: Uint8Array): AttachmentValidation {
+    if (bytes.length >= 8 && PNG_SIGNATURE.every((value, i) => bytes[i] === value)) return png(bytes);
+    if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) return jpeg(bytes);
+    if (bytes.length >= 12 && ascii(bytes, 0, 4) === "RIFF" && ascii(bytes, 8, 4) === "WEBP") return webp(bytes);
     if (bytes.length >= 5 && ascii(bytes, 0, 5) === "%PDF-") return pdf(bytes);
     return { status: "error", code: "UNSUPPORTED_CONTENT" };
 }

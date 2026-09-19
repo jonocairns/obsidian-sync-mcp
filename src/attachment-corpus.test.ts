@@ -4,14 +4,12 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { globSync } from "node:fs";
 import { join } from "node:path";
 import { validateAttachment, type AttachmentValidation } from "./attachment-validation.js";
-import { DEFAULT_ATTACHMENT_LIMITS } from "./attachments.js";
 import {
     PNG_SIGNATURE, idat, ihdr, minimalPdf, onePixelPng, paddedPdf, pngFile, smallJpeg, smallWebp,
-    vp8Payload, vp8lPayload, vp8xPayload, webpFile,
+    vp8lPayload, vp8xPayload, webpFile,
 } from "../test/media-fixtures.js";
 
-const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
-type Expected = "ok" | "MALFORMED_CONTENT" | "UNSUPPORTED_CONTENT" | "DIMENSION_LIMIT";
+type Expected = "ok" | "MALFORMED_CONTENT" | "UNSUPPORTED_CONTENT";
 
 /**
  * Every finding against this validator so far has been a structurally plausible file
@@ -33,28 +31,19 @@ const corpus: [name: string, bytes: Buffer, expected: Expected][] = [
     ["png: no IDAT", pngFile([["IHDR", ihdr(1, 1)], ["IEND", Buffer.alloc(0)]]), "MALFORMED_CONTENT"],
     ["png: truncated mid-stream", onePixelPng().subarray(0, 30), "MALFORMED_CONTENT"],
     ["png: signature only", Buffer.from(PNG_SIGNATURE), "MALFORMED_CONTENT"],
-    ["png: zero width", pngFile([["IHDR", ihdr(0, 1)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "MALFORMED_CONTENT"],
+    ["png: zero width, not measured", pngFile([["IHDR", ihdr(0, 1)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "ok"],
     ["png: invalid bit depth for colour type", pngFile([["IHDR", ihdr(1, 1, 4, 2)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "MALFORMED_CONTENT"],
-    ["png: APNG animation control", pngFile([["IHDR", ihdr(1, 1)], ["acTL", Buffer.alloc(8)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "UNSUPPORTED_CONTENT"],
-    ["png: over per-side cap", pngFile([["IHDR", ihdr(8001, 1)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "DIMENSION_LIMIT"],
-    ["png: within side cap, over pixel budget", pngFile([["IHDR", ihdr(8000, 7000)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "DIMENSION_LIMIT"],
+    ["png: APNG, served as PNG", pngFile([["IHDR", ihdr(1, 1)], ["acTL", Buffer.alloc(8)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "ok"],
+    ["png: huge, left to the client", pngFile([["IHDR", ihdr(8001, 1)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "ok"],
+    ["png: many megapixels, left to the client", pngFile([["IHDR", ihdr(8000, 7000)], ["IDAT", idat()], ["IEND", Buffer.alloc(0)]]), "ok"],
 
     // --- WebP ---
     ["webp: lossless still", webpFile([["VP8L", vp8lPayload(2, 2)]]), "ok"],
+    ["webp: extended header and frame", webpFile([["VP8X", vp8xPayload(2, 2)], ["VP8L", vp8lPayload(2, 2)]]), "ok"],
+    ["webp: animated, served as WebP", webpFile([["VP8X", vp8xPayload(2, 2, 0x02)], ["ANIM", Buffer.alloc(6)], ["VP8L", vp8lPayload(2, 2)]]), "ok"],
+    ["webp: chunk overruns the container", webpFile([["VP8L", vp8lPayload(2, 2)]]).subarray(0, 24), "MALFORMED_CONTENT"],
     ["webp: lossy still", Buffer.from(smallWebp), "ok"],
-    ["webp: VP8X canvas matching frame", webpFile([["VP8X", vp8xPayload(2, 2)], ["VP8L", vp8lPayload(2, 2)]]), "ok"],
-    ["webp: VP8X canvas larger than frame", webpFile([["VP8X", vp8xPayload(4, 4)], ["VP8L", vp8lPayload(2, 2)]]), "ok"],
-    ["webp: VP8X canvas smaller than frame", webpFile([["VP8X", vp8xPayload(1, 1)], ["VP8L", vp8lPayload(2000, 2000)]]), "MALFORMED_CONTENT"],
-    ["webp: two VP8L chunks", webpFile([["VP8L", vp8lPayload(16000, 16000)], ["VP8L", vp8lPayload(2, 2)]]), "MALFORMED_CONTENT"],
-    ["webp: VP8 then VP8L", webpFile([["VP8 ", vp8Payload(16000, 16000)], ["VP8L", vp8lPayload(2, 2)]]), "MALFORMED_CONTENT"],
-    ["webp: VP8L then VP8", webpFile([["VP8L", vp8lPayload(16000, 16000)], ["VP8 ", vp8Payload(2, 2)]]), "MALFORMED_CONTENT"],
-    ["webp: two VP8X chunks", webpFile([["VP8X", vp8xPayload(16000, 16000)], ["VP8X", vp8xPayload(1, 1)], ["VP8L", vp8lPayload(1, 1)]]), "MALFORMED_CONTENT"],
-    ["webp: VP8X after the bitstream", webpFile([["VP8L", vp8lPayload(2, 2)], ["VP8X", vp8xPayload(2, 2)]]), "MALFORMED_CONTENT"],
-    ["webp: no bitstream chunk", webpFile([["VP8X", vp8xPayload(2, 2)]]), "MALFORMED_CONTENT"],
-    ["webp: unparseable bitstream chunk", webpFile([["VP8L", Buffer.alloc(21)]]), "MALFORMED_CONTENT"],
-    ["webp: ANIM chunk", webpFile([["VP8X", vp8xPayload(2, 2)], ["ANIM", Buffer.alloc(6)], ["VP8L", vp8lPayload(2, 2)]]), "UNSUPPORTED_CONTENT"],
-    ["webp: VP8X animation flag", webpFile([["VP8X", vp8xPayload(2, 2, 0x02)], ["VP8L", vp8lPayload(2, 2)]]), "UNSUPPORTED_CONTENT"],
-    ["webp: frame over per-side cap", webpFile([["VP8L", vp8lPayload(8001, 2)]]), "DIMENSION_LIMIT"],
+    ["webp: huge frame, left to the client", webpFile([["VP8L", vp8lPayload(8001, 2)]]), "ok"],
 
     // --- JPEG ---
     ["jpeg: baseline", Buffer.from(smallJpeg), "ok"],
@@ -81,7 +70,7 @@ const outcome = (result: AttachmentValidation): string => result.status === "ok"
 it("classifies every shape in the format corpus", () => {
     const wrong: string[] = [];
     for (const [name, bytes, expected] of corpus) {
-        const actual = outcome(validateAttachment(new Uint8Array(bytes), maxPixels));
+        const actual = outcome(validateAttachment(new Uint8Array(bytes)));
         if (actual !== expected) wrong.push(`${name}: expected ${expected}, got ${actual}`);
     }
     assert.deepEqual(wrong, [], `\n${wrong.join("\n")}\n`);
@@ -92,7 +81,7 @@ it("reports the sniffed type independently of any extension", () => {
         [onePixelPng(), "image/png"], [smallJpeg, "image/jpeg"],
         [smallWebp, "image/webp"], [minimalPdf(), "application/pdf"],
     ] as const) {
-        const result = validateAttachment(new Uint8Array(bytes), maxPixels);
+        const result = validateAttachment(new Uint8Array(bytes));
         assert.equal(result.status === "ok" && result.mimeType, mimeType);
     }
 });
@@ -125,7 +114,7 @@ it("keeps accepting the real media in ATTACHMENT_CORPUS_DIR", { skip: !process.e
         let bytes: Buffer;
         try { bytes = readFileSync(path); } catch { continue; }
         scanned++;
-        const result = validateAttachment(new Uint8Array(bytes), maxPixels);
+        const result = validateAttachment(new Uint8Array(bytes));
         if (result.status === "error") rejected.push({ path, code: result.code });
     }
     const rate = rejected.length / scanned;
