@@ -2,7 +2,7 @@ import { posix } from "node:path";
 import { UserError, jsonSchemaAdapter, type JsonSchemaObject, type ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { validAttachmentPath, validSourceNotePath, attachmentLimitForPath } from "./attachment-path.js";
+import { validAttachmentPath, validSourceNotePath } from "./attachment-path.js";
 import { validateAttachment, type AttachmentMime } from "./attachment-validation.js";
 import type { VaultBackend, VersionedAttachment } from "./vault-backend.js";
 
@@ -187,7 +187,10 @@ export async function readValidatedAttachment(
     vault: VaultBackend, path: string, limits: AttachmentLimits,
 ): Promise<{ status: "ok"; value: ValidatedAttachment } | Extract<AttachmentResult, { status: "error" }>> {
     if (!validAttachmentPath(path)) return error("INVALID_PATH") as Extract<AttachmentResult, { status: "error" }>;
-    const maxBytes = attachmentLimitForPath(path, limits.imageMaxBytes, limits.pdfMaxBytes);
+    // The extension only hints at the type, so bound the read by the larger configured
+    // limit and let the sniffed type enforce its own below. Choosing by extension made
+    // a PDF stored as .png fail against the image limit before it was ever identified.
+    const maxBytes = Math.max(limits.imageMaxBytes, limits.pdfMaxBytes);
     const read = await vault.readAttachment(path, maxBytes);
     if (read.status === "error") {
         if (read.code === "TOO_LARGE") return error("TOO_LARGE", { size: read.size, maxBytes }) as Extract<AttachmentResult, { status: "error" }>;

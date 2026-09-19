@@ -7,7 +7,7 @@ import type { ViteMCP } from "@vitemcp/server";
 import { LocalVault } from "./vault-local.js";
 import { DEFAULT_ATTACHMENT_LIMITS, attachmentResultSchema, registerAttachmentTools, resolveAttachmentPath, readValidatedAttachment } from "./attachments.js";
 import { validateAttachment } from "./attachment-validation.js";
-import { minimalPdf, onePixelPng, pngWithDimensions, smallJpeg, smallWebp, webpWithOversizedFrame } from "../test/media-fixtures.js";
+import { minimalPdf, onePixelPng, paddedPdf, pngWithDimensions, smallJpeg, smallWebp, webpWithOversizedFrame, webpWithTwoFrames } from "../test/media-fixtures.js";
 
 it("accepts a PNG carrying trailing bytes after IEND but still rejects a corrupt stream", () => {
     const { maxPixels } = DEFAULT_ATTACHMENT_LIMITS;
@@ -22,6 +22,36 @@ it("accepts a PNG carrying trailing bytes after IEND but still rejects a corrupt
     const truncated = onePixelPng().subarray(0, 20);
     const cut = validateAttachment(new Uint8Array(truncated), maxPixels);
     assert.equal(cut.status === "error" && cut.code, "MALFORMED_CONTENT");
+});
+
+it("rejects a still WebP carrying more than one bitstream chunk", () => {
+    // Only the last VP8/VP8L was measured, so an oversized frame could hide behind a
+    // small trailing one and skip the dimension and pixel budgets entirely.
+    const result = validateAttachment(new Uint8Array(webpWithTwoFrames()), DEFAULT_ATTACHMENT_LIMITS.maxPixels);
+    assert.equal(result.status === "error" && result.code, "MALFORMED_CONTENT");
+    assert.equal(validateAttachment(new Uint8Array(smallWebp), DEFAULT_ATTACHMENT_LIMITS.maxPixels).status, "ok");
+});
+
+it("bounds the read by the largest limit so the extension cannot pre-empt the sniffed type", async () => {
+    const root = await mkdtemp(join(tmpdir(), "attachment-limit-"));
+    try {
+        // Between the image and PDF limits: the extension must not decide the outcome.
+        const pdf = paddedPdf(8 * 1024 * 1024);
+        assert.ok(pdf.length > DEFAULT_ATTACHMENT_LIMITS.imageMaxBytes && pdf.length < DEFAULT_ATTACHMENT_LIMITS.pdfMaxBytes);
+        await writeFile(join(root, "document.pdf"), pdf);
+        await writeFile(join(root, "document.png"), pdf);
+        const vault = new LocalVault(root);
+        for (const name of ["document.pdf", "document.png"]) {
+            const read = await readValidatedAttachment(vault, name, DEFAULT_ATTACHMENT_LIMITS);
+            assert.equal(read.status, "ok", `${name}: ${read.status === "error" ? read.error.code : ""}`);
+            if (read.status === "ok") assert.equal(read.value.mimeType, "application/pdf");
+        }
+        // An image beyond the image limit is still refused, whatever it is called.
+        await writeFile(join(root, "huge.png"), Buffer.concat([onePixelPng(), Buffer.alloc(8 * 1024 * 1024)]));
+        const oversized = await readValidatedAttachment(vault, "huge.png", DEFAULT_ATTACHMENT_LIMITS);
+        assert.equal(oversized.status, "error");
+        if (oversized.status === "error") assert.equal(oversized.error.code, "TOO_LARGE");
+    } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 it("rejects an image wider or taller than the client accepts", () => {

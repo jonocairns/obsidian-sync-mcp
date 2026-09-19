@@ -62,6 +62,36 @@ function riffChunk(id: string, data: Buffer): Buffer {
     return Buffer.concat([header, data, data.length & 1 ? Buffer.alloc(1) : Buffer.alloc(0)]);
 }
 
+/** A still WebP hiding a 16000×16000 VP8L behind a trailing 2×2 one; only the last was measured. */
+export function webpWithTwoFrames(): Buffer {
+    const big = Buffer.from([0x2f, 0x7f, 0xfe, 0x9f, 0x0f, 0x00, 0x00, 0x00]);
+    const small = Buffer.from([0x2f, 0x01, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    const body = Buffer.concat([
+        Buffer.from("WEBP", "latin1"),
+        riffChunk("VP8L", big),
+        riffChunk("VP8L", small),
+    ]);
+    const riff = Buffer.alloc(8);
+    riff.write("RIFF", 0, "latin1");
+    riff.writeUInt32LE(body.length, 4);
+    return Buffer.concat([riff, body]);
+}
+
+/** A structurally valid PDF padded to roughly `totalBytes`, for exercising byte limits. */
+export function paddedPdf(totalBytes: number): Buffer {
+    const filler = "0".repeat(Math.max(0, totalBytes - 400));
+    let text = "%PDF-1.4\n";
+    const offsets = [0];
+    for (const body of [
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        `2 0 obj\n<< /Type /Pages /Kids [] /Count 0 /Pad (${filler}) >>\nendobj\n`,
+    ]) { offsets.push(Buffer.byteLength(text)); text += body; }
+    const xref = Buffer.byteLength(text);
+    text += `xref\n0 3\n0000000000 65535 f \n${offsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n \n`).join("")}`;
+    text += `trailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+    return Buffer.from(text);
+}
+
 /** WebP whose VP8X canvas claims 1×1 while the VP8L frame really declares 16000×16000. */
 export function webpWithOversizedFrame(): Buffer {
     const vp8l = Buffer.from([0x2f, 0x7f, 0xfe, 0x9f, 0x0f, 0x00, 0x00, 0x00]);

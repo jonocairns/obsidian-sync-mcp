@@ -63,3 +63,15 @@ it("scans a long malformed line in linear time", () => {
     // Quadratic rescanning made a tenfold line cost a hundredfold; linear stays well under that.
     assert.ok(scale(200_000) < small * 30, "attachment scanning is superlinear in line length");
 });
+
+it("keeps a percent-encoded hash in the filename instead of reading it as a fragment", () => {
+    // Decoding before splitting turned "%23" into a fragment separator and dropped the reference.
+    assert.deepEqual(extractNoteAttachments("![x](report%23draft.png)"), [
+        { target: "report#draft.png", kind: "embed", syntax: "markdown", mimeTypeHint: "image/png", display: "x" },
+    ]);
+    // A real fragment still splits, and is decoded on its own.
+    assert.deepEqual(extractNoteAttachments("![x](a.png#page%3D2)"), [
+        { target: "a.png", kind: "embed", syntax: "markdown", mimeTypeHint: "image/png", fragment: "page=2", display: "x" },
+    ]);
+    assert.deepEqual(extractNoteAttachments("![x](../assets/ui%20state.webp)").map((f) => f.target), ["../assets/ui state.webp"]);
+});

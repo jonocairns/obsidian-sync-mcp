@@ -16,7 +16,3 @@ export function validAttachmentPath(path: string): boolean {
 export function validSourceNotePath(path: string): boolean {
     return validVaultPath(path) && path.endsWith(".md");
 }
-
-export function attachmentLimitForPath(path: string, imageMaxBytes: number, pdfMaxBytes: number): number {
-    return posix.extname(path).toLowerCase() === ".pdf" ? pdfMaxBytes : imageMaxBytes;
-}

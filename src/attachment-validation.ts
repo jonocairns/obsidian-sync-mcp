@@ -104,14 +104,21 @@ function webp(bytes: Uint8Array, maxPixels: number): AttachmentValidation {
         if (kind === "VP8X") {
             if (length !== 10 || (bytes[data] & 0x02) !== 0) return { status: "error", code: "UNSUPPORTED_CONTENT" };
             canvasWidth = le24(bytes, data + 4) + 1; canvasHeight = le24(bytes, data + 7) + 1;
-        } else if (kind === "VP8 " && length >= 10 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
-            frameWidth = ((bytes[data + 7] << 8) | bytes[data + 6]) & 0x3fff;
-            frameHeight = ((bytes[data + 9] << 8) | bytes[data + 8]) & 0x3fff;
+        } else if (kind === "VP8 " || kind === "VP8L") {
+            // A still WebP carries exactly one bitstream chunk. Measuring only the last
+            // would let an oversized frame hide behind a small one and skip the budget,
+            // so a second chunk is rejected on its kind, before it is parsed.
+            if (hasFrame) return { status: "error", code: "MALFORMED_CONTENT" };
             hasFrame = true;
-        } else if (kind === "VP8L" && length >= 5 && bytes[data] === 0x2f) {
-            frameWidth = 1 + (bytes[data + 1] | ((bytes[data + 2] & 0x3f) << 8));
-            frameHeight = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0x0f) << 10));
-            hasFrame = true;
+            if (kind === "VP8 " && length >= 10 && bytes[data + 3] === 0x9d && bytes[data + 4] === 0x01 && bytes[data + 5] === 0x2a) {
+                frameWidth = ((bytes[data + 7] << 8) | bytes[data + 6]) & 0x3fff;
+                frameHeight = ((bytes[data + 9] << 8) | bytes[data + 8]) & 0x3fff;
+            } else if (kind === "VP8L" && length >= 5 && bytes[data] === 0x2f) {
+                frameWidth = 1 + (bytes[data + 1] | ((bytes[data + 2] & 0x3f) << 8));
+                frameHeight = 1 + ((bytes[data + 2] >> 6) | (bytes[data + 3] << 2) | ((bytes[data + 4] & 0x0f) << 10));
+            } else {
+                return { status: "error", code: "MALFORMED_CONTENT" };
+            }
         }
         offset = data + length + (length & 1);
     }

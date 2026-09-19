@@ -41,18 +41,28 @@ function nextLine(input: string, offset: number): number {
     return end < 0 ? input.length : end + 1;
 }
 
-function reference(
-    destination: string, kind: NoteAttachmentReference["kind"], syntax: NoteAttachmentReference["syntax"], display?: string,
+function referenceFrom(
+    rawTarget: string, fragment: string | undefined,
+    kind: NoteAttachmentReference["kind"], syntax: NoteAttachmentReference["syntax"], display?: string,
 ): NoteAttachmentReference | null {
-    const hash = destination.indexOf("#");
-    const target = (hash < 0 ? destination : destination.slice(0, hash)).trim();
+    const target = rawTarget.trim();
     const mimeType = mimeTypeHint(target);
     if (!mimeType) return null;
-    const fragment = hash < 0 ? undefined : destination.slice(hash + 1) || undefined;
     return {
         target, kind, syntax, mimeTypeHint: mimeType,
         ...(fragment ? { fragment } : {}), ...(display ? { display } : {}),
     };
+}
+
+function reference(
+    destination: string, kind: NoteAttachmentReference["kind"], syntax: NoteAttachmentReference["syntax"], display?: string,
+): NoteAttachmentReference | null {
+    const hash = destination.indexOf("#");
+    return referenceFrom(
+        hash < 0 ? destination : destination.slice(0, hash),
+        hash < 0 ? undefined : destination.slice(hash + 1) || undefined,
+        kind, syntax, display,
+    );
 }
 
 /** Longest destination a vault attachment link can hold; bounds work on malformed lines. */
@@ -175,7 +185,7 @@ function parenthesizedTitle(text: string): number {
     return -1;
 }
 
-function markdownDestination(raw: string): string | null {
+function markdownDestination(raw: string): { target: string; fragment?: string } | null {
     const text = raw.trim();
     let destination: string;
     if (text.startsWith("<")) {
@@ -197,8 +207,17 @@ function markdownDestination(raw: string): string | null {
     if (!destination || destination.startsWith("//")) return null;
     destination = unescapeMarkdown(destination);
     if (URL.canParse(destination)) return null;
-    try { return decodeURIComponent(destination); }
-    catch { return null; }
+    // Split on a literal "#" before decoding. Decoding first turns a "%23" inside a
+    // filename into a fragment separator and drops the reference entirely.
+    const hash = destination.indexOf("#");
+    const rawTarget = hash < 0 ? destination : destination.slice(0, hash);
+    const rawFragment = hash < 0 ? "" : destination.slice(hash + 1);
+    try {
+        return {
+            target: decodeURIComponent(rawTarget),
+            ...(rawFragment ? { fragment: decodeURIComponent(rawFragment) } : {}),
+        };
+    } catch { return null; }
 }
 
 function markdownAt(input: string, offset: number, kind: NoteAttachmentReference["kind"], line: LineIndex):
@@ -222,7 +241,7 @@ function markdownAt(input: string, offset: number, kind: NoteAttachmentReference
     }
     if (parentheses !== 0) return null;
     const destination = markdownDestination(input.slice(destinationStart, cursor));
-    return { end: cursor + 1, value: destination ? reference(destination, kind, "markdown", display) : null };
+    return { end: cursor + 1, value: destination ? referenceFrom(destination.target, destination.fragment, kind, "markdown", display) : null };
 }
 
 /** Find supported vault attachment links without reading or resolving binary files. */
