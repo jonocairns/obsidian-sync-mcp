@@ -211,3 +211,44 @@ Also #shared inline`;
         assert.deepEqual(result.tags, ["fallback"]);
     });
 });
+
+describe("shared Markdown interpretation", () => {
+    it("excludes code, escaped syntax, HTML comments and frontmatter prose from metadata", () => {
+        const result = parseFrontmatterAndLinks([
+            "---", 'description: "#yaml [[Yaml note]]"', "tags: [real]", "---",
+            "# Heading", "", "```md", "# Fake", "[[Code note]] #code", "```", "",
+            "    [[Indented]] #indented", "",
+            "`[[Inline]] #inline` <!-- [[Comment]] #comment -->",
+            "\\[[Escaped]] \\#escaped ![alt #image](photo.png)",
+            "See [[Actual#Section|Label]] and [Other][other] #visible **#bold**",
+            "", '[other]: other%20note.md#section "Title"',
+        ].join("\n"));
+        assert.deepEqual(result.tags, ["real", "visible", "bold"]);
+        assert.deepEqual(result.links, ["Actual", "other note.md"]);
+        assert.deepEqual(result.linkLabels, ["Label", "Other"]);
+    });
+
+    it("reads BOM and CRLF frontmatter with the same template handling", () => {
+        const result = parseFrontmatterAndLinks('\uFEFF---\r\naliases: [Alias]\r\ncreated: {{date:YYYY-MM-DD}}\r\n---\r\nBody #tag');
+        assert.deepEqual(result.aliases, ["Alias"]);
+        assert.equal(result.frontmatter.created, "{{date:YYYY-MM-DD}}");
+        assert.deepEqual(result.tags, ["tag"]);
+    });
+
+    it("keeps remote destinations out of the link graph, encoded or not", () => {
+        // outgoingLinks feeds the search index and backlink graph, so a host that
+        // slips through becomes a graph node. The URL test runs before decoding and
+        // again after, because `https%3A%2F%2F...` is not a URL until it is decoded.
+        for (const destination of [
+            "https://example.com/note.md",
+            "//example.com/note.md",
+            "https%3A%2F%2Fexample.com%2Fnote.md",
+            "https:%2F%2Fexample.com%2Fnote.md",
+            "%2F%2Fexample.com%2Fnote.md",
+        ]) {
+            assert.deepEqual(parseFrontmatterAndLinks(`[x](${destination})`).links, [], destination);
+        }
+        // Vault-relative destinations are unaffected.
+        assert.deepEqual(parseFrontmatterAndLinks("[x](notes/a.md) [[Other Note]]").links, ["notes/a.md", "Other Note"]);
+    });
+});

@@ -4,7 +4,7 @@
 
 import { UpstreamAdapter as DirectFileManipulator } from "./commonlib-adapter.js";
 import type { DirectFileManipulatorOptions } from "@vrtmrz/livesync-commonlib";
-import { createTextBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
+import { createTextBlob, readAsBlob } from "@vrtmrz/livesync-commonlib/compat/common/utils";
 import { decodeNoteBytes } from "./note-content.js";
 import type { FilePathWithPrefix } from "@vrtmrz/livesync-commonlib/compat/common/types";
 import { isPathProbablyObfuscated, decrypt } from "octagonal-wheels/encryption/encryption";
@@ -14,6 +14,8 @@ import type { VaultBackend, NoteInfo, NoteListing, BackendMutationResult, Backen
 import { deriveContent } from "./index-sync.js";
 import { classifyIds, type IdFormat } from "./id-format.js";
 import { encodeNoteVersion } from "./note-version.js";
+import { validAttachmentPath } from "./attachment-path.js";
+import type { AttachmentReadResult } from "./vault-backend.js";
 import { watchInOrder } from "./ordered-change-feed.js";
 
 type NoteChangeCallback = (path: string, content: string | null, mtime?: number, seq?: string | number) => void;
@@ -313,6 +315,46 @@ export class Vault implements VaultBackend {
             }
             return { status: "error", code: "BACKEND_UNAVAILABLE" };
         }
+    }
+
+    async readAttachment(path: string, maxBytes: number): Promise<AttachmentReadResult> {
+        if (!validAttachmentPath(path)) return { status: "error", code: "INVALID_PATH" };
+        try {
+            const entry = await this.manipulator.getVersionedEntry(path as FilePathWithPrefix, maxBytes);
+            if (!entry || entry.deleted || entry._deleted) return { status: "error", code: "NOTE_NOT_FOUND" };
+            const blob = readAsBlob(entry);
+            if (blob.size > maxBytes) return { status: "error", code: "TOO_LARGE", size: blob.size };
+            const bytes = new Uint8Array(await blob.arrayBuffer());
+            if (bytes.byteLength !== entry.size) return { status: "error", code: "BACKEND_UNAVAILABLE" };
+            const leaves = [
+                { revision: entry._rev, deleted: false },
+                ...(entry._conflicts ?? []).map((revision: string) => ({ revision, deleted: false })),
+                ...(entry._deleted_conflicts ?? []).map((revision: string) => ({ revision, deleted: true })),
+            ].sort((a, b) => a.revision.localeCompare(b.revision));
+            return { status: "ok", attachment: {
+                path, bytes, size: bytes.byteLength,
+                mtime: typeof entry.mtime === "number" && Number.isFinite(entry.mtime) && Math.abs(entry.mtime) <= 8.64e15 ? entry.mtime : 0,
+                version: encodeNoteVersion({ backend: this.backendIdentity(), path, state: "exists", mutation: { winner: entry._rev, leaves } }),
+            } };
+        } catch (error: any) {
+            if (error.code === "ATTACHMENT_TOO_LARGE") return { status: "error", code: "TOO_LARGE", size: error.size };
+            if (error.status === 404 || error.name === "not_found") return { status: "error", code: "NOTE_NOT_FOUND" };
+            return { status: "error", code: "BACKEND_UNAVAILABLE" };
+        }
+    }
+
+    async attachmentExists(path: string): Promise<boolean> {
+        if (!validAttachmentPath(path)) return false;
+        try { return await this.manipulator.entryExists(path as FilePathWithPrefix); }
+        catch { return false; }
+    }
+
+    async listAttachments(): Promise<string[]> {
+        const paths: string[] = [];
+        for await (const entry of this.manipulator.enumerateAllNormalDocs({ metaOnly: true })) {
+            if (!entry.deleted && validAttachmentPath(entry.path ?? "")) paths.push(entry.path!);
+        }
+        return paths.sort((a, b) => a.localeCompare(b));
     }
 
     async readNote(path: string): Promise<string | null> {

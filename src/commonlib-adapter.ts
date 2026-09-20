@@ -110,9 +110,27 @@ export class UpstreamAdapter extends DirectFileManipulator {
         return { _rev: value._rev, _conflicts: revisions("_conflicts"), _deleted_conflicts: revisions("_deleted_conflicts") };
     }
 
-    async getVersionedEntry(path: FilePathWithPrefix): Promise<false | (LoadedEntry & RevisionMetadata)> {
+    /** Metadata-only existence probe. Never reconstructs chunked content. */
+    async entryExists(path: FilePathWithPrefix): Promise<boolean> {
+        const meta = await this.liveSyncLocalDB.getDBEntryMeta(path);
+        return Boolean(meta) && !(meta as { deleted?: boolean })?.deleted && !(meta as { _deleted?: boolean })?._deleted;
+    }
+
+    async getVersionedEntry(path: FilePathWithPrefix, maxBytes?: number): Promise<false | (LoadedEntry & RevisionMetadata)> {
         const id = await this.path2id(path);
         const metadata = await this.readRevisionMetadata(id);
+        if (maxBytes !== undefined) {
+            // Commonlib's metadata reader applies the configured property
+            // decryption. Raw CouchDB HTTP metadata may hide `size` entirely.
+            const preflight = await this.liveSyncLocalDB.getDBEntryMeta(path, { rev: metadata._rev });
+            if (!preflight || !Number.isSafeInteger(preflight.size) || preflight.size < 0) {
+                throw Object.assign(new Error("Attachment size metadata unavailable"), { code: "ATTACHMENT_SIZE_UNKNOWN" });
+            }
+            if (preflight.size > maxBytes) throw Object.assign(new Error("Attachment exceeds byte limit"), { code: "ATTACHMENT_TOO_LARGE", size: preflight.size });
+            if ("children" in preflight && Array.isArray(preflight.children) && preflight.children.length > 4096) {
+                throw Object.assign(new Error("Attachment has too many chunks"), { code: "ATTACHMENT_CHUNK_LIMIT" });
+            }
+        }
         // The path-based Commonlib loader normalizes legacy inline entries into
         // empty plain entries. Load the exact revision's original representation
         // through Commonlib's decrypted raw API and metadata-based decoder.

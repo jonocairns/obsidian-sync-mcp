@@ -55,6 +55,17 @@ notes_fts     ─── compact metadata candidate lane
 chunks_fts    ─── one Porter-stemmed passage index
 ```
 
+Markdown metadata, attachment references, titles and passage boundaries share
+`src/markdown.ts` (`markdown-it` plus an Obsidian wiki-link rule). Code blocks,
+inline code and HTML comments do not produce tags or links. Top-level ATX and
+Setext headings define titles and sections; heading-like text inside code or
+nested block quotes stays in the section body. Passage bodies retain their source
+Markdown (with normalized line endings).
+
+`src/frontmatter.ts` locates one leading YAML block, including BOM and CRLF
+variants. Metadata uses the existing YAML parser and template-scalar handling;
+exact edits use the original body offset without reserializing YAML.
+
 Markdown is split at headings; oversized sections are divided at paragraph
 boundaries with no overlap. Search combines exact SQL title/alias/path matches,
 metadata FTS, and stemmed passage BM25 using reciprocal-rank fusion. Passage
@@ -80,7 +91,9 @@ results or a CouchDB checkpoint from being reused for another backend.
 SQLite incrementally commits metadata and content; there is no JSON
 snapshot or five-minute search-index save timer. CouchDB changes and their
 sequence checkpoint commit in the same bounded transaction, with an event-loop
-yield between batches. An incompatible schema is renamed to a timestamped
+yield between batches. Schema v5 rebuilds the derived metadata and passages with the shared Markdown
+parser, including unchanged notes. The rebuild clears the CouchDB checkpoint so
+remote vaults replay all notes. An incompatible schema is renamed to a timestamped
 `.bak` file before a clean rebuild.
 
 SQLite uses `DELETE` journaling and in-memory temporary tables. Encrypted index

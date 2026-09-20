@@ -12,6 +12,7 @@ import { join } from "path";
 import { spawn, type ChildProcess } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { request as httpRequest } from "node:http";
+import { minimalPdf, onePixelPng } from "./media-fixtures.js";
 
 const PORT = 9877;
 const BASE = `http://localhost:${PORT}/mcp`;
@@ -438,6 +439,38 @@ describe("E2E: list_notes", () => {
     });
 });
 
+describe("E2E: read_attachment", () => {
+    it("delivers an image embed as MCP image content", async () => {
+        const image = onePixelPng();
+        await writeFile(join(vaultDir, "photo.png"), image);
+        await writeFile(join(vaultDir, "photo-source.md"), "![[photo.png]]");
+        const result = await callToolResult("read_attachment", { target: "photo.png", sourceNotePath: "photo-source.md" });
+        assert.equal(result.structuredContent.status, "ok", JSON.stringify(result.structuredContent));
+        assert.equal(result.structuredContent.result.mimeType, "image/png");
+        assert.equal(result.content[1].type, "image");
+        assert.deepEqual(Buffer.from(result.content[1].data, "base64"), image);
+    });
+
+    it("delivers a PDF through the tool and a versioned MCP resource", async () => {
+        const pdf = minimalPdf();
+        await writeFile(join(vaultDir, "report.pdf"), pdf);
+        const result = await callToolResult("read_attachment", { path: "report.pdf" });
+        assert.equal(result.structuredContent.status, "ok", JSON.stringify(result.structuredContent));
+        assert.equal(result.structuredContent.result.mimeType, "application/pdf");
+        assert.equal(result.content[1].type, "resource");
+        assert.deepEqual(Buffer.from(result.content[1].resource.blob, "base64"), Buffer.from(pdf));
+        const resource = await mcpCall("resources/read", { uri: result.structuredContent.result.uri });
+        assert.equal(resource.result.contents[0].mimeType, "application/pdf");
+        assert.deepEqual(Buffer.from(resource.result.contents[0].blob, "base64"), Buffer.from(pdf));
+        const denied = await fetch(BASE, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+            body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "resources/read", params: { uri: result.structuredContent.result.uri } }),
+        });
+        assert.equal(denied.status, 401);
+    });
+});
+
 describe("E2E: read_note", () => {
     it("advertises strict schemas and returns structured canonical Markdown", async () => {
         const listed = await mcpCall("tools/list", {});
@@ -470,6 +503,41 @@ describe("E2E: read_note", () => {
         assert.equal(result.structuredContent.status, "error");
         assert.equal(result.structuredContent.error.code, "NOTE_NOT_FOUND");
         assert.equal(result.structuredContent.recovery.strategy, "change_request");
+    });
+
+    it("lists note attachments in structured reads and fetches a chosen relative embed", async () => {
+        await mkdir(join(vaultDir, "assets"), { recursive: true });
+        await writeFile(join(vaultDir, "assets", "diagram.png"), onePixelPng());
+        await writeFile(join(vaultDir, "projects", "with-media.md"),
+            "# Design\n![diagram](../assets/diagram.png)\n![[report.pdf#page=2]]");
+        const read = await callToolResult("read_note", { path: "projects/with-media.md" });
+        const metadata = await callToolResult("get_note_metadata", { path: "projects/with-media.md" });
+        const attachments = [
+            { target: "../assets/diagram.png", kind: "embed", syntax: "markdown", mimeTypeHint: "image/png", display: "diagram" },
+            { target: "report.pdf", kind: "embed", syntax: "wikilink", mimeTypeHint: "application/pdf", fragment: "page=2" },
+        ];
+        assert.deepEqual(read.structuredContent.result.attachments, attachments);
+        assert.deepEqual(metadata.structuredContent.result.attachments, attachments);
+        assert.equal(metadata.structuredContent.result.markdown, undefined);
+        assert.equal(read.content.length, 1, "reading a note must not eagerly include attachment bytes");
+        const image = await callToolResult("read_attachment", {
+            target: attachments[0].target, sourceNotePath: "projects/with-media.md",
+        });
+        assert.equal(image.structuredContent.result.path, "assets/diagram.png");
+        assert.equal(image.content[1].type, "image");
+    });
+
+    it("reads discovered filenames containing a literal hash without reparsing the target", async () => {
+        await writeFile(join(vaultDir, "draft#1.png"), onePixelPng());
+        await writeFile(join(vaultDir, "hash-source.md"), "![draft](draft%231.png)");
+        const note = await callToolResult("read_note", { path: "hash-source.md" });
+        const [reference] = note.structuredContent.result.attachments;
+        assert.equal(reference.target, "draft#1.png");
+        const attachment = await callToolResult("read_attachment", {
+            target: reference.target, sourceNotePath: "hash-source.md",
+        });
+        assert.equal(attachment.structuredContent.status, "ok");
+        assert.equal(attachment.structuredContent.result.path, "draft#1.png");
     });
 
     it("does not expose non-UTF-8 backend bytes as public note content", async () => {
@@ -594,7 +662,7 @@ describe("E2E: READ_ONLY mode", () => {
         for (const w of ["create_note", "edit_note", "delete_note", "move_note"]) {
             assert.ok(!tools.includes(w), `${w} should not be registered in READ_ONLY mode`);
         }
-        for (const r of ["read_note", "list_notes", "list_folders", "list_tags", "get_note_metadata"]) {
+        for (const r of ["read_note", "read_attachment", "list_notes", "list_folders", "list_tags", "get_note_metadata"]) {
             assert.ok(tools.includes(r), `${r} should remain available in READ_ONLY mode`);
         }
 

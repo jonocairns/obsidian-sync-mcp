@@ -41,6 +41,9 @@ function backend(mutation: BackendMutationResult, read: BackendReadResult = { st
         getMetadata: async () => null,
         listNotes: async () => [],
         listNotesWithMtime: async () => [],
+        readAttachment: async () => ({ status: "error", code: "NOTE_NOT_FOUND" }),
+        listAttachments: async () => [],
+        attachmentExists: async () => false,
     };
 }
 

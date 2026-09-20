@@ -25,6 +25,16 @@ export interface VersionedNote {
     concurrency: ConcurrencyGuarantee;
     backendState?: unknown;
 }
+export interface VersionedAttachment {
+    path: string;
+    bytes: Uint8Array;
+    version: string;
+    size: number;
+    mtime: number;
+}
+export type AttachmentReadResult =
+    | { status: "ok"; attachment: VersionedAttachment }
+    | { status: "error"; code: "INVALID_PATH" | "NOTE_NOT_FOUND" | "TOO_LARGE" | "BACKEND_UNAVAILABLE"; size?: number };
 export type BackendFailureCode = "INVALID_PATH" | "NOTE_NOT_FOUND" | "STALE_VERSION" | "PRE_EXISTING_CONFLICT" | "DESTINATION_EXISTS" | "RESTORE_REQUIRED" | "BACKEND_UNAVAILABLE" | "INTERNAL_ERROR";
 export type BackendReadResult = { status: "ok"; note: VersionedNote } | { status: "error"; code: BackendFailureCode };
 export interface BackendEffect {
@@ -58,6 +68,12 @@ export interface VaultBackend extends VersionedNoteBackend {
     getMetadata(path: string): Promise<NoteInfo | null>;
     listNotes(folder?: string): Promise<string[]>;
     listNotesWithMtime(folder?: string): Promise<NoteListing[]>;
+    /** Binary reads are bounded before the backend reconstructs attachment content. */
+    readAttachment(path: string, maxBytes: number): Promise<AttachmentReadResult>;
+    /** Vault-relative paths only; attachment content is never indexed. */
+    listAttachments(): Promise<string[]>;
+    /** Metadata-only probe, so a known path never pays for a full vault enumeration. */
+    attachmentExists(path: string): Promise<boolean>;
     watchChanges?(callback: (path: string, content: string | null, mtime?: number, seq?: string | number) => void, indexedPaths?: () => readonly string[]): void;
     /** Catch up on changes, seeding tombstone identity from persisted index paths on restart. CouchDB only. */
     catchUp?(since: string, callback: (path: string, content: string | null, mtime?: number) => void, onBatch?: (since: string, processed: number) => Promise<void>, indexedPaths?: readonly string[]): Promise<string>;

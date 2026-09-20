@@ -20,6 +20,7 @@ import {
 import { ensureDataDirWritable } from "./data-dir.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
+import { parseAttachmentLimits, registerAttachmentTools } from "./attachments.js";
 import { schemaVersion } from "./note-contract.js";
 import { parseWriteFolders } from "./write-scope.js";
 
@@ -352,7 +353,7 @@ if (VAULT_PATH) {
 }
 
 // --- MCP Server ---
-const BASE_INSTRUCTIONS = "Access and manage Markdown notes in an Obsidian vault. Single-note reads return canonical Markdown and an authoritative opaque version. Use a fresh read_note or get_note_metadata version before edit, delete, or move. Only note-identifying success responses include a separate Obsidian deep link.";
+const BASE_INSTRUCTIONS = "Access and manage Markdown notes in an Obsidian vault. Single-note reads return canonical Markdown, attachment references, and an authoritative opaque version. Use a fresh read_note or get_note_metadata version before edit, delete, or move. Use read_attachment with an attachment target and its source note path to inspect an existing PNG, JPEG, WebP or PDF on demand. Only note-identifying success responses include a separate Obsidian deep link.";
 const serverOptions: ConstructorParameters<typeof ViteMCP>[0] = {
     name: "obsidian-sync-mcp",
     version: (process.env.npm_package_version ?? schemaVersion) as `${number}.${number}.${number}`,
@@ -417,6 +418,7 @@ if (AUTH_TOKEN) {
 
 // --- Tools ---
 registerTools(server, vault, searchIndex, VAULT_NAME, READ_ONLY, WRITE_FOLDERS);
+registerAttachmentTools(server, vault, parseAttachmentLimits(process.env));
 
 // --- Graceful shutdown ---
 async function shutdown() {
