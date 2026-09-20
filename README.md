@@ -259,9 +259,17 @@ The type is identified from the bytes, not the extension, and the container is
 checked for integrity — PNG chunk CRCs, a PDF trailer. Images are not measured and
 animation is not rejected: how large or how animated a file may be is the client's
 limit to enforce, and the server never decodes an image. So an image wider than the
-Claude API's 8000 px maximum, or an animated GIF-like WebP, is read and sent, and
-the API refuses or flattens it. Trailing bytes after a PNG's `IEND` are accepted,
-since files rewritten in place still decode everywhere.
+Claude API's 8000 px per-image maximum, or an animated GIF-like WebP, is read and
+sent, and the API refuses or flattens it. Trailing bytes after a PNG's `IEND` are
+accepted, since files rewritten in place still decode everywhere.
+
+That 8000 px figure is the point of outright rejection, not the resolution the model
+sees. Anything above the model's long-edge limit — 2576 px on Claude 4.7 and later,
+1568 px before that — is downscaled first, so a high-resolution scan or screenshot
+loses detail rather than being refused, and fine print may stop being legible. A
+request carrying more than 20 images applies a stricter per-image limit again. Where
+legibility matters, crop or downsample in the vault rather than raising the byte
+limits here.
 
 Reads are limited to 7 MiB for images and 10 MiB for PDFs by default. That byte cap
 is the real bound on a read, and the defaults are chosen so the base64-encoded

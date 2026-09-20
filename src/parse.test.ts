@@ -234,4 +234,21 @@ describe("shared Markdown interpretation", () => {
         assert.equal(result.frontmatter.created, "{{date:YYYY-MM-DD}}");
         assert.deepEqual(result.tags, ["tag"]);
     });
+
+    it("keeps remote destinations out of the link graph, encoded or not", () => {
+        // outgoingLinks feeds the search index and backlink graph, so a host that
+        // slips through becomes a graph node. The URL test runs before decoding and
+        // again after, because `https%3A%2F%2F...` is not a URL until it is decoded.
+        for (const destination of [
+            "https://example.com/note.md",
+            "//example.com/note.md",
+            "https%3A%2F%2Fexample.com%2Fnote.md",
+            "https:%2F%2Fexample.com%2Fnote.md",
+            "%2F%2Fexample.com%2Fnote.md",
+        ]) {
+            assert.deepEqual(parseFrontmatterAndLinks(`[x](${destination})`).links, [], destination);
+        }
+        // Vault-relative destinations are unaffected.
+        assert.deepEqual(parseFrontmatterAndLinks("[x](notes/a.md) [[Other Note]]").links, ["notes/a.md", "Other Note"]);
+    });
 });

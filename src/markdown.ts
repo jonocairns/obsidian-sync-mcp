@@ -56,11 +56,14 @@ export function* markdownInlineTokens(tokens: Token[]): Generator<Token> {
     }
 }
 
+/** Leaves the vault: an absolute URL, or protocol-relative. */
+const remote = (destination: string) => destination.startsWith("//") || URL.canParse(destination);
+
 function reference(
     destination: string, kind: MarkdownReference["kind"],
     syntax: MarkdownReference["syntax"], display: string,
 ): MarkdownReference | null {
-    if (!destination || destination.startsWith("//") || URL.canParse(destination)) return null;
+    if (!destination || remote(destination)) return null;
     const hash = destination.indexOf("#");
     let target = (hash < 0 ? destination : destination.slice(0, hash)).trim();
     let fragment = hash < 0 ? "" : destination.slice(hash + 1);
@@ -69,6 +72,11 @@ function reference(
     if (syntax === "markdown") {
         try { target = decodeURIComponent(target); fragment = decodeURIComponent(fragment); }
         catch { return null; }
+        // Decoding can produce a destination the first test could not see:
+        // `https%3A%2F%2Fexample.com%2Fa.png` is not a URL until it is decoded.
+        // Left unchecked it reaches `attachments`, and a `.md` one reaches
+        // `outgoingLinks`, putting a remote host in the backlink graph.
+        if (remote(target)) return null;
     }
     if (!target) return null;
     return { target, kind, syntax,

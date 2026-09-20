@@ -122,4 +122,10 @@ it("preserves literal wiki filenames and decodes Markdown destinations only once
         ["assets/a&b.png", "assets/a(b).png"]);
     assert.deepEqual(targets("![x](unencoded space.png)"), []);
     assert.deepEqual(targets("[remote](https://example.com/a.pdf) ![remote](//example.com/a.png)"), []);
+    // A destination only becomes a URL once decoded, so the check runs again afterwards.
+    assert.deepEqual(targets("![x](https%3A%2F%2Fexample.com%2Ffile.pdf)"), []);
+    assert.deepEqual(targets("![x](https:%2F%2Fexample.com%2Fa.png)"), []);
+    assert.deepEqual(targets("![x](%2F%2Fexample.com%2Fa.png)"), []);
+    // A wiki target is literal, so an encoded one is a filename rather than a URL.
+    assert.deepEqual(targets("![[https%3A%2F%2Fexample.com%2Fx.png]]"), ["https%3A%2F%2Fexample.com%2Fx.png"]);
 });
