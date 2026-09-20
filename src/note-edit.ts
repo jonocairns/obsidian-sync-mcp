@@ -1,3 +1,5 @@
+import { frontmatterBoundary } from "./frontmatter.js";
+
 export type EditOperation = "replace_all" | "append" | "prepend_body" | "replace_once";
 export type EditResult = { ok: true; content: string; replacements: number } | { ok: false; code: "LITERAL_NOT_FOUND" | "LITERAL_AMBIGUOUS"; matches: number };
 
@@ -18,8 +20,7 @@ export function applyNoteEdit(existing: string, operation: EditOperation, conten
     if (operation === "replace_all") return { ok: true, content, replacements: 1 };
     if (operation === "append") return { ok: true, content: existing + content, replacements: 0 };
     if (operation === "prepend_body") {
-        const frontmatter = existing.match(/^(?:\uFEFF)?---(?:\r\n|\n)[\s\S]*?(?:\r\n|\n)---(?:\r\n|\n)/);
-        const at = frontmatter?.[0].length ?? 0;
+        const at = frontmatterBoundary(existing)?.bodyStart ?? 0;
         return { ok: true, content: existing.slice(0, at) + content + existing.slice(at), replacements: 0 };
     }
     const needle = oldText ?? "";

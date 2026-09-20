@@ -13,6 +13,7 @@ import type { SearchBuildStatus, SearchIndex } from "./search.js";
 import { isPathWritable } from "./write-scope.js";
 import { applyNoteEdit } from "./note-edit.js";
 import { domainError, recovery, schemaVersion, structuredNoteOutputSchema, toToolResult, type ErrorCode, type StructuredNoteResult } from "./note-contract.js";
+import { parseMarkdown } from "./markdown.js";
 import { extractNoteAttachments } from "./note-attachments.js";
 import { parseFrontmatterAndLinks } from "./parse.js";
 
@@ -248,7 +249,8 @@ export function registerTools(
             let markdown: string;
             try { markdown = markdownDecoder.decode(read.note.bytes); }
             catch { return toToolResult(publicError("INTERNAL_ERROR")); }
-            const metadata = parseFrontmatterAndLinks(markdown);
+            const document = parseMarkdown(markdown);
+            const metadata = parseFrontmatterAndLinks(document);
             const value: StructuredNoteResult = {
                 schemaVersion, status: "ok",
                 result: {
@@ -256,7 +258,7 @@ export function registerTools(
                     size: read.note.size,
                     timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
                     frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
-                    attachments: extractNoteAttachments(markdown),
+                    attachments: extractNoteAttachments(document),
                     conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
                     concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),
                 },
@@ -555,14 +557,15 @@ export function registerTools(
             let markdown: string;
             try { markdown = markdownDecoder.decode(read.note.bytes); }
             catch { return toToolResult(publicError("INTERNAL_ERROR")); }
-            const metadata = parseFrontmatterAndLinks(markdown);
+            const document = parseMarkdown(markdown);
+            const metadata = parseFrontmatterAndLinks(document);
             const value: StructuredNoteResult = {
                 schemaVersion, status: "ok",
                 result: {
                     kind: "note", path: read.note.path, version: read.note.version, size: read.note.size,
                     timestamps: { created: new Date(read.note.ctime).toISOString(), modified: new Date(read.note.mtime).toISOString() },
                     frontmatter: metadata.frontmatter, tags: metadata.tags, outgoingLinks: metadata.links,
-                    attachments: extractNoteAttachments(markdown),
+                    attachments: extractNoteAttachments(document),
                     backlinks: searchIndex.getBacklinks(path), indexFreshness: indexFreshness(searchIndex),
                     conflict: { hasConflicts: read.note.conflicts.length > 0, leafCount: read.note.conflicts.length + 1 },
                     concurrency: read.note.concurrency, deepLink: makeDeepLink(vaultName, read.note.path),

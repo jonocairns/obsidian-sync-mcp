@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import type { ViteMCP } from "@vitemcp/server";
 import { LocalVault } from "./vault-local.js";
 import { DEFAULT_ATTACHMENT_LIMITS, attachmentResultSchema, registerAttachmentTools, resolveAttachmentPath, readValidatedAttachment } from "./attachments.js";
+import { extractNoteAttachments } from "./note-attachments.js";
 import { validateAttachment } from "./attachment-validation.js";
 import { minimalPdf, onePixelPng, paddedPdf, pngWithDimensions, smallJpeg, smallWebp, webpWithOversizedFrame, webpWithTwoFrames } from "../test/media-fixtures.js";
 
@@ -82,7 +83,7 @@ it("reads an image embed and a PDF through tool and resource content without cha
         } as unknown as ViteMCP, vault, DEFAULT_ATTACHMENT_LIMITS);
         const call = (input: Record<string, string>) => tools.get("read_attachment").execute(input);
 
-        const imageResult = await call({ target: "![[photo.png]]", sourceNotePath: "notes/source.md" });
+        const imageResult = await call({ target: "photo.png", sourceNotePath: "notes/source.md" });
         assert.equal(imageResult.structuredContent.status, "ok", JSON.stringify(imageResult.structuredContent));
         assert.equal(attachmentResultSchema.safeParse(imageResult.structuredContent).success, true);
         assert.equal(imageResult.structuredContent.result.mimeType, "image/png");
@@ -102,7 +103,7 @@ it("reads an image embed and a PDF through tool and resource content without cha
         assert.equal(pdfResult.content[1].type, "resource");
         assert.deepEqual(Buffer.from(pdfResult.content[1].resource.blob, "base64"), pdf);
         assert.equal(pdfResult.structuredContent.result.size, pdf.length);
-        const pdfEmbed = await call({ target: "![[report.pdf#page=2]]", sourceNotePath: "notes/source.md" });
+        const pdfEmbed = await call({ target: "report.pdf", sourceNotePath: "notes/source.md" });
         assert.equal(pdfEmbed.structuredContent.result.path, "assets/report.pdf");
         await writeFile(join(root, "assets", "spoof.png"), pdf);
         const spoofed = await call({ path: "assets/spoof.png" });
@@ -156,7 +157,7 @@ it("resolves a concrete target without enumerating the vault, and still falls ba
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-it("keeps a percent-encoded hash in an embed target, and ignores directories named like attachments", async () => {
+it("resolves discovered targets unchanged, and ignores directories named like attachments", async () => {
     const root = await mkdtemp(join(tmpdir(), "attachment-target-"));
     try {
         await mkdir(join(root, "assets"));
@@ -171,12 +172,20 @@ it("keeps a percent-encoded hash in an embed target, and ignores directories nam
         assert.deepEqual(await resolveAttachmentPath(vault, { target: "logo.png", sourceNotePath: "source.md" }),
             { status: "ok", path: "assets/logo.png" });
 
-        // Decoding before splitting truncated the name at "%23" and failed as INVALID_PATH.
-        assert.deepEqual(await resolveAttachmentPath(vault, { target: "![x](assets/report%23draft.png)", sourceNotePath: "source.md" }),
-            { status: "ok", path: "assets/report#draft.png" });
-        // A real fragment on an embed target is still stripped.
-        assert.deepEqual(await resolveAttachmentPath(vault, { target: "![[assets/logo.png#page=2]]", sourceNotePath: "source.md" }),
-            { status: "ok", path: "assets/logo.png" });
+        for (const [markdown, expected] of [
+            ["![x](assets/report%23draft.png)", "assets/report#draft.png"],
+            ["![[assets/logo.png#page=2]]", "assets/logo.png"],
+        ]) {
+            const [reference] = extractNoteAttachments(markdown);
+            assert.ok(reference);
+            assert.deepEqual(await resolveAttachmentPath(vault, { target: reference.target, sourceNotePath: "source.md" }),
+                { status: "ok", path: expected });
+        }
+        // Canonical targets are literal, even when they resemble URL escapes.
+        await writeFile(join(root, "assets", "report%23draft.png"), onePixelPng());
+        assert.deepEqual(await resolveAttachmentPath(vault, { target: "assets/report%23draft.png", sourceNotePath: "source.md" }),
+            { status: "ok", path: "assets/report%23draft.png" });
+
     } finally { await rm(root, { recursive: true, force: true }); }
 });
 

@@ -33,8 +33,8 @@ it("keeps the actual MIME type provisional until read_attachment checks the byte
 
 it("reads a parenthesised link title without losing names that end in brackets", () => {
     assert.deepEqual(extractNoteAttachments("[scan](scan.pdf (PDF scan))").map((found) => found.target), ["scan.pdf"]);
-    assert.deepEqual(extractNoteAttachments("![x](report (1).png)").map((found) => found.target), ["report (1).png"]);
-    assert.deepEqual(extractNoteAttachments("![x](report (1).png (title))").map((found) => found.target), ["report (1).png"]);
+    assert.deepEqual(extractNoteAttachments("![x](<report (1).png>)").map((found) => found.target), ["report (1).png"]);
+    assert.deepEqual(extractNoteAttachments("![x](report%20(1).png (title))").map((found) => found.target), ["report (1).png"]);
 });
 
 it("reads an unmatched backtick as literal text, not an open code span", () => {
@@ -82,7 +82,44 @@ it("reads a quoted Markdown title without losing names that contain quotes or br
     assert.deepEqual(targets('[scan](scan.pdf "title (")'), ["scan.pdf"]);
     assert.deepEqual(targets("[scan](scan.pdf 'title (')"), ["scan.pdf"]);
     // A title opens only after whitespace, so an apostrophe inside a name is still a name.
-    assert.deepEqual(targets("![x](jono's file.png)"), ["jono's file.png"]);
+    assert.deepEqual(targets("![x](<jono's file.png>)"), ["jono's file.png"]);
     assert.deepEqual(targets("![x](a(b)c.png)"), ["a(b)c.png"]);
-    assert.deepEqual(targets("![x](report (1).png)"), ["report (1).png"]);
+    assert.deepEqual(targets("![x](<report (1).png>)"), ["report (1).png"]);
+});
+
+it("uses Markdown structure for reference links, nested blocks, and literal examples", () => {
+    const markdown = [
+        "> ![[quoted.png|320]]",
+        "- ![diagram][image]",
+        "- [**Read** the `scan`][document]",
+        "",
+        "[image]: assets/diagram%20v2.png \"Diagram\"",
+        "[document]: assets/scan.pdf#page=2",
+        "",
+        "    ![[indented-code.png]]",
+        "",
+        "<!-- ![[comment.png]] -->",
+        "Text <!-- ![[inline-comment.png]] --> after.",
+        "~~~md",
+        "![example](fenced.png)",
+        "~~~",
+        "\\!\\[\\[escaped.png]] and `![[inline-code.png]]`",
+        "![![nested](not-an-attachment.png)](actual.png)",
+    ].join("\n");
+    assert.deepEqual(extractNoteAttachments(markdown), [
+        { target: "quoted.png", kind: "embed", syntax: "wikilink", mimeTypeHint: "image/png", display: "320" },
+        { target: "assets/diagram v2.png", kind: "embed", syntax: "markdown", mimeTypeHint: "image/png", display: "diagram" },
+        { target: "assets/scan.pdf", kind: "link", syntax: "markdown", mimeTypeHint: "application/pdf", fragment: "page=2", display: "Read the scan" },
+        { target: "actual.png", kind: "embed", syntax: "markdown", mimeTypeHint: "image/png", display: "![nested](not-an-attachment.png)" },
+    ]);
+});
+
+it("preserves literal wiki filenames and decodes Markdown destinations only once", () => {
+    const targets = (markdown: string) => extractNoteAttachments(markdown).map((f) => f.target);
+    assert.deepEqual(targets("![[assets/report%23draft.png]] ![x](assets/report%2523draft.png)"),
+        ["assets/report%23draft.png", "assets/report%23draft.png"]);
+    assert.deepEqual(targets("![x](assets/a&amp;b.png) ![x](assets/a\\(b\\).png)"),
+        ["assets/a&b.png", "assets/a(b).png"]);
+    assert.deepEqual(targets("![x](unencoded space.png)"), []);
+    assert.deepEqual(targets("[remote](https://example.com/a.pdf) ![remote](//example.com/a.png)"), []);
 });

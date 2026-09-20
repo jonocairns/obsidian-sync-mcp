@@ -1,3 +1,5 @@
+import { parseMarkdown, markdownHeadings, type ParsedMarkdown } from "./markdown.js";
+
 /** A compact, deterministic representation of one searchable Markdown section. */
 export interface MarkdownChunk {
     ordinal: number;
@@ -11,14 +13,6 @@ const MAX_WORDS = 800;
 
 function wordCount(value: string): number {
     return value.match(/\S+/g)?.length ?? 0;
-}
-
-function stripFrontmatter(content: string): string {
-    if (!content.startsWith("---\n")) return content;
-    const end = content.indexOf("\n---", 4);
-    if (end === -1) return content;
-    const bodyStart = content.indexOf("\n", end + 4);
-    return bodyStart === -1 ? "" : content.slice(bodyStart + 1);
 }
 
 function splitOversizedBody(body: string): string[] {
@@ -55,51 +49,28 @@ function splitOversizedBody(body: string): string[] {
     return pieces;
 }
 
-/**
- * Split a note at ATX headings, retaining the heading hierarchy as a breadcrumb.
- * Large sections are divided at paragraph boundaries without overlap.
- */
-export function chunkMarkdown(content: string): MarkdownChunk[] {
-    const body = stripFrontmatter(content).replace(/\r\n/g, "\n");
-    const lines = body.split("\n");
+/** Split at parsed headings; preserve source text and the existing word budget. */
+export function chunkMarkdown(content: string | ParsedMarkdown): MarkdownChunk[] {
+    const parsed = typeof content === "string" ? parseMarkdown(content) : content;
+    const lines = parsed.body.split("\n");
     const headings: string[] = [];
-    const sections: Array<{ heading: string; breadcrumb: string; lines: string[] }> = [];
-    let current = { heading: "", breadcrumb: "", lines: [] as string[] };
-
-    const pushCurrent = () => {
-        if (current.lines.some((line) => line.trim())) sections.push(current);
-    };
-
-    for (const line of lines) {
-        const match = line.match(/^(#{1,6})\s+(.+?)\s*#*\s*$/);
-        if (!match) {
-            current.lines.push(line);
-            continue;
-        }
-
-        pushCurrent();
-        const level = match[1].length;
-        const heading = match[2].trim();
-        headings.length = level - 1;
-        headings[level - 1] = heading;
-        current = {
-            heading,
-            breadcrumb: headings.filter(Boolean).join(" > "),
-            lines: [],
-        };
-    }
-    pushCurrent();
-
     const chunks: MarkdownChunk[] = [];
-    for (const section of sections) {
-        for (const piece of splitOversizedBody(section.lines.join("\n"))) {
-            chunks.push({
-                ordinal: chunks.length,
-                heading: section.heading,
-                breadcrumb: section.breadcrumb,
-                body: piece,
-            });
+    let start = 0;
+    let heading = "";
+    let breadcrumb = "";
+    const append = (end: number) => {
+        for (const body of splitOversizedBody(lines.slice(start, end).join("\n"))) {
+            chunks.push({ ordinal: chunks.length, heading, breadcrumb, body });
         }
+    };
+    for (const section of markdownHeadings(parsed.tokens)) {
+        append(section.start);
+        headings.length = section.level - 1;
+        headings[section.level - 1] = section.text;
+        heading = section.text;
+        breadcrumb = headings.filter(Boolean).join(" > ");
+        start = section.end;
     }
+    append(lines.length);
     return chunks;
 }

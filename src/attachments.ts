@@ -105,18 +105,6 @@ function pathFromUriId(id: string): string | null {
     return Buffer.from(path).toString("base64url") === id && validAttachmentPath(path) ? path : null;
 }
 
-function normalizeTarget(target: string): string {
-    const trimmed = target.trim();
-    const wiki = /^!\[\[([^\]]+)\]\]$/.exec(trimmed);
-    const markdown = /^!\[[^\]]*\]\(([^)]+)\)$/.exec(trimmed);
-    const value = wiki?.[1]?.split("|")[0] ?? markdown?.[1] ?? trimmed;
-    // Split the fragment before decoding: decoding first turns a "%23" inside a
-    // filename into a separator and truncates the name, as it did in the note scanner.
-    const path = value.split("#")[0];
-    if (!markdown) return path.trim();
-    try { return decodeURIComponent(path).trim(); } catch { return ""; }
-}
-
 export async function resolveAttachmentPath(
     vault: VaultBackend,
     input: { path?: string; target?: string; sourceNotePath?: string },
@@ -128,7 +116,8 @@ export async function resolveAttachmentPath(
     }
     if (input.target === undefined || input.sourceNotePath === undefined) return error("INVALID_INPUT") as Extract<AttachmentResult, { status: "error" }>;
     if (!validSourceNotePath(input.sourceNotePath)) return error("INVALID_PATH") as Extract<AttachmentResult, { status: "error" }>;
-    const target = normalizeTarget(input.target);
+    // Discovery already parsed and decoded this destination. Preserve literal # and %.
+    const target = input.target;
     if (!target || target.includes("\\") || target.includes("\0")) return error("INVALID_PATH") as Extract<AttachmentResult, { status: "error" }>;
     const sourceFolder = posix.dirname(input.sourceNotePath);
     const absolute = target.startsWith("/");
@@ -221,7 +210,7 @@ export function registerAttachmentTools(server: ViteMCP, vault: VaultBackend, li
         annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
         parameters: z.object({
             path: z.string().optional().describe("Exact vault-relative attachment path."),
-            target: z.string().optional().describe("Obsidian embed target, such as image.png or ![[image.png]]."),
+            target: z.string().optional().describe("Decoded attachment target from read_note or get_note_metadata, such as image.png. Pass it unchanged, without link markup or a fragment."),
             sourceNotePath: z.string().optional().describe("Vault-relative Markdown note path containing the embed."),
         }),
         outputSchema: attachmentOutputSchema,

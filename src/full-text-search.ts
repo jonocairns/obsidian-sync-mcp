@@ -5,6 +5,7 @@ import { chmod, mkdir, open as openFile, rename } from "fs/promises";
 import { basename, dirname, join } from "path";
 import { createHash, hkdfSync, scryptSync } from "node:crypto";
 import Database from "better-sqlite3-multiple-ciphers";
+import { parseMarkdown, markdownHeadings } from "./markdown.js";
 import { chunkMarkdown } from "./markdown-chunker.js";
 import { parseFrontmatterAndLinks } from "./parse.js";
 
@@ -77,7 +78,8 @@ export function searchIndexStoragePaths(baseDataDir: string, backendId: string, 
 // that may contain base64 bodies, empty legacy entries, missed tombstones,
 // purely numeric tags extracted from prose references such as "PR #6553", or
 // non-ASCII tags truncated by the old tag pattern ("#café" indexed as "caf").
-export const SCHEMA_VERSION = 4;
+// v5 rebuilds derived metadata and passages using the shared Markdown parser.
+export const SCHEMA_VERSION = 5;
 const CANDIDATE_LIMIT = 200;
 const EXACT_WEIGHT = 12;
 // Prefix matches exist for partial-word queries the FTS lanes cannot serve at
@@ -161,8 +163,9 @@ function pathAsText(path: string): string {
 function escapeLike(value: string): string { return value.replace(/[\\%_]/g, "\\$&"); }
 function normalizeSnippet(value: string): string { return value.replace(/\s+/g, " ").trim(); }
 function extractSearchFields(path: string, content: string) {
-    const metadata = parseFrontmatterAndLinks(content);
-    const firstHeading = content.match(/^#\s+(.+?)\s*#*\s*$/m)?.[1]?.trim();
+    const document = parseMarkdown(content);
+    const metadata = parseFrontmatterAndLinks(document);
+    const firstHeading = markdownHeadings(document.tokens).find((heading) => heading.level === 1)?.text;
     const title = firstHeading || basename(path, ".md");
     return {
         title,
@@ -174,7 +177,7 @@ function extractSearchFields(path: string, content: string) {
         tags: metadata.tags,
         links: metadata.links,
         linkLabels: metadata.linkLabels,
-        chunks: chunkMarkdown(content),
+        chunks: chunkMarkdown(document),
         contentHash: createHash("sha256").update(content).digest("hex"),
     };
 }

@@ -444,7 +444,7 @@ describe("E2E: read_attachment", () => {
         const image = onePixelPng();
         await writeFile(join(vaultDir, "photo.png"), image);
         await writeFile(join(vaultDir, "photo-source.md"), "![[photo.png]]");
-        const result = await callToolResult("read_attachment", { target: "![[photo.png]]", sourceNotePath: "photo-source.md" });
+        const result = await callToolResult("read_attachment", { target: "photo.png", sourceNotePath: "photo-source.md" });
         assert.equal(result.structuredContent.status, "ok", JSON.stringify(result.structuredContent));
         assert.equal(result.structuredContent.result.mimeType, "image/png");
         assert.equal(result.content[1].type, "image");
@@ -525,6 +525,19 @@ describe("E2E: read_note", () => {
         });
         assert.equal(image.structuredContent.result.path, "assets/diagram.png");
         assert.equal(image.content[1].type, "image");
+    });
+
+    it("reads discovered filenames containing a literal hash without reparsing the target", async () => {
+        await writeFile(join(vaultDir, "draft#1.png"), onePixelPng());
+        await writeFile(join(vaultDir, "hash-source.md"), "![draft](draft%231.png)");
+        const note = await callToolResult("read_note", { path: "hash-source.md" });
+        const [reference] = note.structuredContent.result.attachments;
+        assert.equal(reference.target, "draft#1.png");
+        const attachment = await callToolResult("read_attachment", {
+            target: reference.target, sourceNotePath: "hash-source.md",
+        });
+        assert.equal(attachment.structuredContent.status, "ok");
+        assert.equal(attachment.structuredContent.result.path, "draft#1.png");
     });
 
     it("does not expose non-UTF-8 backend bytes as public note content", async () => {

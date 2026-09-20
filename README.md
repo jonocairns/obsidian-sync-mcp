@@ -237,6 +237,12 @@ array does not read the referenced file, claim it exists, or include binary
 content. For example, `![[report.pdf#page=3]]` yields a target of
 `report.pdf` and a `page=3` fragment. To fetch it, call
 `read_attachment({"target":"report.pdf","sourceNotePath":"notes/source.md"})`.
+Pass the returned `target` unchanged: it is already decoded and has its fragment
+removed. The tool accepts destinations rather than pasted Markdown or wiki-link
+markup. Markdown destinations containing spaces must use URL encoding or angle
+brackets, for example `![chart](assets/my%20chart.png)` or
+`![chart](<assets/my chart.png>)`. Standard Markdown is parsed with `markdown-it`;
+a focused inline rule recognizes Obsidian wiki links and embeds.
 Vault-root, note-relative, and shortest-name targets are supported; ambiguous
 short names return candidate paths. `read_attachment({"path":"assets/photo.png"})`
 reads an exact vault-relative path and returns image bytes in an MCP `image`
@@ -362,6 +368,12 @@ Handled errors have `status: "error"`, `error: {code, message}`, and MCP
 Framework validation still rejects invalid parameter types, modes, and limits.
 
 > "Add a bullet point to my daily note." "Find my notes about the MCP server and fix the typo in the second one."
+
+The shared Markdown parser excludes code examples and HTML comments from tags
+and links, and recognizes real ATX and Setext headings for search titles and
+passages. Frontmatter supports LF, CRLF and an optional BOM. On first startup
+with index schema v5, the previous index is backed up and rebuilt once, including
+unchanged notes; CouchDB vaults replay their notes from the beginning.
 
 ### Migrating clients to 0.9
 

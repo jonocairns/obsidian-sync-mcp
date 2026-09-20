@@ -211,3 +211,27 @@ Also #shared inline`;
         assert.deepEqual(result.tags, ["fallback"]);
     });
 });
+
+describe("shared Markdown interpretation", () => {
+    it("excludes code, escaped syntax, HTML comments and frontmatter prose from metadata", () => {
+        const result = parseFrontmatterAndLinks([
+            "---", 'description: "#yaml [[Yaml note]]"', "tags: [real]", "---",
+            "# Heading", "", "```md", "# Fake", "[[Code note]] #code", "```", "",
+            "    [[Indented]] #indented", "",
+            "`[[Inline]] #inline` <!-- [[Comment]] #comment -->",
+            "\\[[Escaped]] \\#escaped ![alt #image](photo.png)",
+            "See [[Actual#Section|Label]] and [Other][other] #visible **#bold**",
+            "", '[other]: other%20note.md#section "Title"',
+        ].join("\n"));
+        assert.deepEqual(result.tags, ["real", "visible", "bold"]);
+        assert.deepEqual(result.links, ["Actual", "other note.md"]);
+        assert.deepEqual(result.linkLabels, ["Label", "Other"]);
+    });
+
+    it("reads BOM and CRLF frontmatter with the same template handling", () => {
+        const result = parseFrontmatterAndLinks('\uFEFF---\r\naliases: [Alias]\r\ncreated: {{date:YYYY-MM-DD}}\r\n---\r\nBody #tag');
+        assert.deepEqual(result.aliases, ["Alias"]);
+        assert.equal(result.frontmatter.created, "{{date:YYYY-MM-DD}}");
+        assert.deepEqual(result.tags, ["tag"]);
+    });
+});

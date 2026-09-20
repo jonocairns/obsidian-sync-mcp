@@ -684,3 +684,39 @@ it("projects existing metadata without changing lane scores or order", async () 
         assert.equal(body[0].title, "other");
     } finally { index.close(); }
 });
+
+it("rebuilds v4 derived Markdown data and checkpoints even for unchanged notes", async () => {
+    const path = join(tmpDir, "markdown-v4.sqlite");
+    const content = "```md\n# False title\n[[Phantom]] #phantom\n```\n\nReal title\n==========\n\nSearchable body #visible [[Actual]]";
+    const old = await FullTextIndex.open(path);
+    old.update("source.md", content, 123);
+    old.checkpoint = "old-parser-checkpoint";
+    old.close();
+    const Database = (await import("better-sqlite3-multiple-ciphers")).default;
+    const raw = new Database(path);
+    raw.pragma("user_version = 4");
+    raw.prepare("UPDATE notes SET title = 'False title'").run();
+    raw.close();
+
+    const rebuilt = await FullTextIndex.open(path);
+    try {
+        assert.equal(rebuilt.recreatedForSchemaMismatch, true);
+        assert.equal(rebuilt.size, 0);
+        assert.equal(rebuilt.checkpoint, "");
+        rebuilt.update("source.md", content, 123);
+        assert.deepEqual(rebuilt.getTags("source.md"), ["visible"]);
+        assert.deepEqual(rebuilt.getBacklinks("Phantom.md"), []);
+        assert.deepEqual(rebuilt.getBacklinks("Actual.md"), ["source.md"]);
+        const [hit] = rebuilt.search({ query: "Searchable" });
+        assert.equal(hit.title, "Real title");
+        assert.equal(hit.heading, "Real title");
+        // Literal examples remain searchable body text, but no longer create metadata.
+        assert.equal(rebuilt.search({ query: "phantom" }).length, 1);
+    } finally { rebuilt.close(); }
+    const backup = (await readdir(tmpDir)).find((name) => name.startsWith("markdown-v4.sqlite.schema-v4-") && name.endsWith(".bak"));
+    assert.ok(backup);
+    const saved = new Database(join(tmpDir, backup));
+    try {
+        assert.equal((saved.prepare("SELECT title FROM notes").get() as { title: string }).title, "False title");
+    } finally { saved.close(); }
+});

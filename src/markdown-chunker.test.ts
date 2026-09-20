@@ -37,3 +37,15 @@ Look at edge distance.`);
         assert.ok(chunks.every((chunk) => chunk.breadcrumb === "Large"));
     });
 });
+
+it("uses real heading boundaries and keeps code examples intact", () => {
+    const example = "```md\n# Fake heading\n[[Example]] #example\n```";
+    const chunks = chunkMarkdown([
+        "# Real **title**", "", "Introduction.", "", example, "", "> # Quoted heading", "",
+        "Second section", "--------------", "Body with `code`.",
+    ].join("\n"));
+    assert.deepEqual(chunks, [
+        { ordinal: 0, heading: "Real title", breadcrumb: "Real title", body: `Introduction.\n\n${example}\n\n> # Quoted heading` },
+        { ordinal: 1, heading: "Second section", breadcrumb: "Real title > Second section", body: "Body with `code`." },
+    ]);
+});
