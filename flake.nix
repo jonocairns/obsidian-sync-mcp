@@ -28,6 +28,9 @@
               pkgs.gh
               pkgs.docker-client
               pkgs.shellcheck
+              # The release script tests filter their mocked GitHub responses
+              # with it.
+              pkgs.jq
             ];
           };
         }
