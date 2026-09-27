@@ -3,21 +3,19 @@
  * Generate a LiveSync Setup URI for easy Obsidian configuration.
  *
  * Reads from environment variables:
- *   hostname, username, password, database, passphrase, uri_passphrase (optional)
+ *   hostname, username, password, database, passphrase, uri_passphrase
+ *
+ * uri_passphrase is required: the caller generates it and shows it to the
+ * user, so this script never prints a secret. Only the URI is written.
  */
 
 import { encrypt } from "octagonal-wheels/encryption/encryption";
 
-const nouns = ["waterfall","river","breeze","moon","rain","wind","sea","morning","snow","lake","sunset","pine","shadow","leaf","dawn","forest","hill","cloud","meadow","glade","bird","brook","butterfly","dew","field","flower","firefly","grass","haze","mountain","night","pond","snowflake","silence","sky","thunder","violet","wildflower","wave","dream","cherry","tree","fog","frost","star"];
-const adjectives = ["autumn","hidden","bitter","misty","silent","empty","dry","dark","summer","icy","delicate","quiet","white","cool","spring","winter","patient","twilight","crimson","wispy","weathered","blue","billowing","broken","cold","frosty","green","long","lingering","bold","little","morning","old","red","still","small","sparkling","shy","wandering","withered","wild","young","holy","solitary","fragrant","aged","snowy","proud","ancient","purple","lively","nameless"];
-
-function friendlyString() {
-    const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
-    const noun = nouns[Math.floor(Math.random() * nouns.length)];
-    return `${adj}-${noun}`;
+const uriPassphrase = process.env.uri_passphrase;
+if (!uriPassphrase) {
+    console.error("uri_passphrase is required");
+    process.exit(1);
 }
-
-const uriPassphrase = process.env.uri_passphrase || friendlyString();
 
 const conf = {
     couchDB_URI: process.env.hostname,
@@ -51,5 +49,4 @@ const conf = {
 const encryptedConf = encodeURIComponent(await encrypt(JSON.stringify(conf), uriPassphrase, false));
 const setupURI = `obsidian://setuplivesync?settings=${encryptedConf}`;
 
-console.log(`URI Passphrase: ${uriPassphrase}`);
 console.log(setupURI);
