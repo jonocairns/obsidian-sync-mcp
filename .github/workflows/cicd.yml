@@ -10,9 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  # Keep release-bearing main runs intact, but stop wasting runner time on
-  # superseded revisions of the same pull request.
+  # One group per commit on main, not one for the branch. A group holds a single
+  # pending run and a newly queued one cancels it, so a shared group would let a
+  # third push discard a queued release merge -- and nothing else would ever
+  # release it, because each run only acts on its own SHA. Main runs overlapping
+  # is safe: release-context.sh only lets the current head refresh the release
+  # PR, and the release and publish jobs queue per tag.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  # Stop wasting runner time on superseded revisions of the same pull request.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:

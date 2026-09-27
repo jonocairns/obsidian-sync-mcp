@@ -27,10 +27,17 @@ gh() {
         "api "*)
             if [[ "$*" == *'/git/ref/heads/main'* ]]; then
                 printf '%s\n' "$MOCK_MAIN_SHA"
-            elif [[ "$*" == *'autorelease: pending'* ]]; then
-                printf '%s' "${MOCK_PENDING_PR:-}"
-            elif [[ "$*" == *'autorelease: tagged'* ]]; then
-                printf '%s' "${MOCK_TAGGED_PR:-}"
+            elif [[ "$*" == *'/commits/'*'/pulls'* ]]; then
+                # Apply the script's own --jq filter to a representative
+                # response, so the merge-SHA, base and label predicates that
+                # decide whether a release happens are what gets tested.
+                local filter='' previous='' argument
+                for argument in "$@"; do
+                    [[ "$previous" == --jq ]] && filter=$argument
+                    previous=$argument
+                done
+                [[ -n "$filter" ]] || fail "gh api call omitted --jq: $*"
+                jq -r "$filter" <<<"${MOCK_PULLS:-[]}"
             else
                 fail "unexpected gh api call: $*"
             fi
@@ -79,31 +86,56 @@ sha=1111111111111111111111111111111111111111
 other_sha=2222222222222222222222222222222222222222
 context_output="$test_root/context-output"
 
+# One pull request as GET /repos/{owner}/{repo}/commits/{sha}/pulls returns it,
+# trimmed to the fields the filter reads.
+pull() {
+    local number=$1 base=$2 merge_sha=$3 label=${4:-}
+    local labels='[]'
+    [[ -n "$label" ]] && labels=$(printf '[{"name":"%s"}]' "$label")
+    printf '{"number":%s,"base":{"ref":"%s"},"merge_commit_sha":"%s","labels":%s}' \
+        "$number" "$base" "$merge_sha" "$labels"
+}
+
 run_context() {
     : >"$context_output"
     EXPECTED_SHA=$sha \
         GITHUB_REPOSITORY=jonocairns/obsidian-sync-mcp \
         GITHUB_OUTPUT=$context_output \
         MOCK_MAIN_SHA=${MOCK_MAIN_SHA:-$sha} \
-        MOCK_PENDING_PR=${MOCK_PENDING_PR:-} \
-        MOCK_TAGGED_PR=${MOCK_TAGGED_PR:-} \
+        MOCK_PULLS=${MOCK_PULLS:-[]} \
         "$context_script" >/dev/null
 }
 
-MOCK_MAIN_SHA=$sha MOCK_PENDING_PR='' MOCK_TAGGED_PR='' run_context
+MOCK_PULLS='[]' run_context
 assert_line 'update-pr=true' "$context_output"
 assert_line 'create-release=false' "$context_output"
 assert_line 'release-context=false' "$context_output"
 
-MOCK_MAIN_SHA=$sha MOCK_PENDING_PR=42 MOCK_TAGGED_PR='' run_context
+MOCK_PULLS="[$(pull 42 main "$sha" 'autorelease: pending')]" run_context
 assert_line 'create-release=true' "$context_output"
 assert_line 'release-context=true' "$context_output"
 
-MOCK_MAIN_SHA=$sha MOCK_PENDING_PR='' MOCK_TAGGED_PR=42 run_context
+MOCK_PULLS="[$(pull 42 main "$sha" 'autorelease: tagged')]" run_context
 assert_line 'create-release=false' "$context_output"
 assert_line 'release-context=true' "$context_output"
 
-MOCK_MAIN_SHA=$other_sha MOCK_PENDING_PR='' MOCK_TAGGED_PR='' run_context
+# A commit on main can belong to other PRs too; only the one it merged counts.
+MOCK_PULLS="[$(pull 41 main "$sha"),$(pull 42 main "$sha" 'autorelease: pending')]" run_context
+assert_line 'create-release=true' "$context_output"
+
+MOCK_PULLS="[$(pull 42 main "$other_sha" 'autorelease: pending')]" run_context
+assert_line 'create-release=false' "$context_output"
+assert_line 'release-context=false' "$context_output"
+
+MOCK_PULLS="[$(pull 42 develop "$sha" 'autorelease: pending')]" run_context
+assert_line 'create-release=false' "$context_output"
+assert_line 'release-context=false' "$context_output"
+
+MOCK_PULLS="[$(pull 42 main "$sha")]" run_context
+assert_line 'create-release=false' "$context_output"
+assert_line 'release-context=false' "$context_output"
+
+MOCK_MAIN_SHA=$other_sha run_context
 assert_line 'update-pr=false' "$context_output"
 
 if EXPECTED_SHA=invalid GITHUB_REPOSITORY=owner/repo GITHUB_OUTPUT="$context_output" \
