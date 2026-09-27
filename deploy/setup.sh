@@ -164,13 +164,12 @@ if [ "$DEPLOY_TYPE" != "2" ]; then
 
     # Generate Setup URIs for easy Obsidian configuration
     SETUP_SCRIPT="$SCRIPT_DIR/generate-setup-uri.mjs"
-    URI_PASS=$(hostname="https://${APP_NAME}.fly.dev:5984" \
+    URI_PASSPHRASE=$(openssl rand -hex 16)
+    ADMIN_URI=$(hostname="https://${APP_NAME}.fly.dev:5984" \
         username="$COUCHDB_USER" password="$COUCHDB_PASSWORD" \
         database="$COUCHDB_DATABASE" passphrase="$PASSPHRASE" \
+        uri_passphrase="$URI_PASSPHRASE" \
         node "$SETUP_SCRIPT") && {
-        URI_PASSPHRASE=$(echo "$URI_PASS" | head -1 | sed 's/URI Passphrase: //')
-        ADMIN_URI=$(echo "$URI_PASS" | tail -1)
-
         echo ""
         echo "=== LiveSync Setup URI ==="
         echo "URI Passphrase: $URI_PASSPHRASE"
@@ -184,7 +183,7 @@ if [ "$DEPLOY_TYPE" != "2" ]; then
                 username="livesync" password="$LIVESYNC_PASSWORD" \
                 database="$COUCHDB_DATABASE" passphrase="$PASSPHRASE" \
                 uri_passphrase="$URI_PASSPHRASE" \
-                node "$SETUP_SCRIPT" | tail -1)
+                node "$SETUP_SCRIPT")
             echo ""
             echo "--- LiveSync user (limited access) ---"
             echo "$LS_URI"
