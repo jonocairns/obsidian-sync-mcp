@@ -176,6 +176,42 @@ describe("Dynamic Client Registration", () => {
         assert.equal(body.client_secret, undefined);
     });
 
+    it("rejects redirect_uris with executable, local or unparseable schemes", async () => {
+        const { app } = setup();
+        for (const redirectUri of [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            " javascript:alert(1)",
+            "java\tscript:alert(1)",
+            "vbscript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "not a url",
+        ]) {
+            const resp = await app.request("/oauth/register", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ client_name: "test", redirect_uris: [redirectUri] }),
+            });
+            assert.equal(resp.status, 400, redirectUri);
+            const body = (await resp.json()) as any;
+            assert.equal(body.error, "invalid_client_metadata");
+        }
+    });
+
+    it("accepts loopback and custom-scheme redirect_uris used by native clients", async () => {
+        const { app } = setup();
+        const redirectUris = ["http://127.0.0.1:33418/callback", "cursor://anysphere.cursor-retrieval/oauth/callback"];
+        const resp = await app.request("/oauth/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ client_name: "test", redirect_uris: redirectUris }),
+        });
+        assert.equal(resp.status, 201);
+        const body = (await resp.json()) as any;
+        assert.deepEqual(body.redirect_uris, redirectUris);
+    });
+
     it("rejects an unrecognized token endpoint auth method", async () => {
         const { app } = setup();
         const resp = await app.request("/oauth/register", {

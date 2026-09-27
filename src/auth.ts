@@ -55,6 +55,8 @@ const MAX_CLIENTS = 100;
 const MAX_PENDING = 100;
 const PENDING_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const AUTH_STATE_VERSION = 2; // v2 tokens are known to have passed password approval
+// Schemes that execute or read locally instead of navigating to a client.
+const BLOCKED_REDIRECT_SCHEMES = new Set(["javascript:", "data:", "file:", "vbscript:"]);
 
 export interface AuthHandle {
     validateToken: (auth: string | undefined) => boolean;
@@ -187,8 +189,12 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         }
         const safeUri = (u: any) => {
             if (typeof u !== "string" || u.length > 2048) return false;
-            const lower = u.toLowerCase();
-            return !lower.startsWith("javascript:") && !lower.startsWith("data:") && !lower.startsWith("file:");
+            // Check the parsed scheme, not the raw prefix: the URL parser strips
+            // leading whitespace and embedded tabs/newlines, so " javascript:"
+            // and "java\tscript:" both resolve to javascript:. It also rejects
+            // URIs that /oauth/approve could not redirect to.
+            if (!URL.canParse(u)) return false;
+            return !BLOCKED_REDIRECT_SCHEMES.has(new URL(u).protocol);
         };
         if (redirectUris.some((u: any) => !safeUri(u))) {
             return c.json({ error: "invalid_client_metadata", error_description: "invalid redirect_uri" }, 400);
