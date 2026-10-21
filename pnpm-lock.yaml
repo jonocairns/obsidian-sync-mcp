@@ -28,7 +28,7 @@ importers:
         version: 13.0.3
       hono:
         specifier: ^4.13.2
-        version: 4.13.5
+        version: 4.13.11
       markdown-it:
         specifier: 14.3.1
         version: 14.3.1
@@ -948,8 +948,8 @@ packages:
   get-tsconfig@4.13.7:
     resolution: {integrity: sha512-7tN6rFgBlMgpBML5j8typ92BKFi2sFQvIdpAqLA2beia5avZDrMs0FLZiM5etShWq5irVyGcGMEA1jcDaK7A/Q==}
 
-  hono@4.13.5:
-    resolution: {integrity: sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw==}
+  hono@4.13.11:
+    resolution: {integrity: sha512-/SMX/RQNJn7oNmFwH6DtwDqcrzZU2otm1FD6OJe2cWF6cfy/F8hq0XVBv7xW3FTJshRQwuBnXHDq2kNsdZnshg==}
     engines: {node: '>=16.9.0'}
 
   human-signals@8.0.1:
@@ -2130,7 +2130,7 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       execa: 9.6.1
       file-type: 21.3.4
-      hono: 4.13.5
+      hono: 4.13.11
       undici: 7.29.0
       uri-templates: 0.2.0
       xsschema: 0.4.4(zod-to-json-schema@3.25.1(zod@4.5.4))(zod@4.5.4)
@@ -2384,7 +2384,7 @@ snapshots:
     dependencies:
       resolve-pkg-maps: 1.0.0
 
-  hono@4.13.5: {}
+  hono@4.13.11: {}
 
   human-signals@8.0.1: {}
 
