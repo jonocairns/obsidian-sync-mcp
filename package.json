@@ -47,7 +47,7 @@
         "ajv-formats": "^3.0.1",
         "better-sqlite3-multiple-ciphers": "^13.0.3",
         "hono": "^4.13.2",
-        "markdown-it": "14.3.1",
+        "markdown-it": "14.3.3",
         "octagonal-wheels": "0.1.54",
         "yaml": "^2.9.0",
         "zod": "^3",
