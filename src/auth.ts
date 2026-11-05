@@ -26,6 +26,7 @@ interface PendingAuth {
     state: string;
     code: string;
     approved: boolean;
+    approvedAt?: number;
     createdAt: number;
 }
 
@@ -54,13 +55,14 @@ const DAY_MS = 24 * 3600 * 1000;
 const DEFAULT_REFRESH_DAYS = 14;
 const DEFAULT_SESSION_MAX_DAYS = 90;
 function envDays(name: string, fallback: number): number {
-    return (parseInt(process.env[name] ?? String(fallback)) || fallback) * DAY_MS;
+    const days = parseInt(process.env[name] ?? String(fallback));
+    return (days > 0 ? days : fallback) * DAY_MS;
 }
 // Inactivity window: a session that goes this long without a refresh ends.
-const REFRESH_EXPIRY_MS = envDays("MCP_REFRESH_DAYS", DEFAULT_REFRESH_DAYS);
+export const REFRESH_EXPIRY_MS = envDays("MCP_REFRESH_DAYS", DEFAULT_REFRESH_DAYS);
 // Absolute cap from password entry, so a leaked refresh token that keeps
 // being used cannot keep a session alive forever.
-const SESSION_MAX_MS = envDays("MCP_SESSION_MAX_DAYS", DEFAULT_SESSION_MAX_DAYS);
+export const SESSION_MAX_MS = envDays("MCP_SESSION_MAX_DAYS", DEFAULT_SESSION_MAX_DAYS);
 const MAX_FAILED_BEFORE_LOCKOUT = 5;
 const BASE_LOCKOUT_MS = 5 * 1000; // 5 seconds, doubles each lockout
 const MAX_CLIENTS = 100;
@@ -364,6 +366,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
         lockoutCount = 0;
         lockedUntil = 0;
         pending.approved = true;
+        pending.approvedAt = Date.now();
         csrfTokens.delete(code);
         console.log("Auth: password accepted, issuing authorization code.");
 
@@ -437,12 +440,13 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             const accessToken = randomBytes(32).toString("hex");
             const refreshToken = randomBytes(32).toString("hex");
             const now = Date.now();
-            const sessionExpiresAt = now + SESSION_MAX_MS;
+            // The cap runs from password entry, not from this code exchange.
+            const sessionExpiresAt = (pending.approvedAt ?? now) + SESSION_MAX_MS;
             const record: TokenRecord = {
                 accessToken,
                 refreshToken,
                 clientId: pending.clientId,
-                expiresAt: now + TOKEN_EXPIRY_MS,
+                expiresAt: Math.min(now + TOKEN_EXPIRY_MS, sessionExpiresAt),
                 refreshExpiresAt: Math.min(now + REFRESH_EXPIRY_MS, sessionExpiresAt),
                 sessionExpiresAt,
             };
@@ -453,7 +457,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             return c.json({
                 access_token: accessToken,
                 token_type: "Bearer",
-                expires_in: TOKEN_EXPIRY_MS / 1000,
+                expires_in: Math.floor((record.expiresAt - now) / 1000),
                 refresh_token: refreshToken,
             });
         }
@@ -496,7 +500,8 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 accessToken,
                 refreshToken: newRefreshToken,
                 clientId: old.clientId,
-                expiresAt: now + TOKEN_EXPIRY_MS,
+                // No access token may outlive the session.
+                expiresAt: Math.min(now + TOKEN_EXPIRY_MS, old.sessionExpiresAt),
                 // Slide the inactivity window, but never past the absolute cap.
                 refreshExpiresAt: Math.min(now + REFRESH_EXPIRY_MS, old.sessionExpiresAt),
                 sessionExpiresAt: old.sessionExpiresAt,
@@ -508,7 +513,7 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             return c.json({
                 access_token: accessToken,
                 token_type: "Bearer",
-                expires_in: TOKEN_EXPIRY_MS / 1000,
+                expires_in: Math.floor((record.expiresAt - now) / 1000),
                 refresh_token: newRefreshToken,
             });
         }
@@ -523,7 +528,8 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
             const token = authHeader.slice(7);
             const record = tokens.get(token);
             if (!record) return false;
-            if (Date.now() > record.expiresAt) {
+            const now = Date.now();
+            if (now > record.expiresAt || now > record.sessionExpiresAt) {
                 tokens.delete(token);
                 return false;
             }

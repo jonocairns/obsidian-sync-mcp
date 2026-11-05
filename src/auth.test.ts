@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "crypto";
 import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
-import { mountPasswordAuth } from "./auth.js";
+import { mountPasswordAuth, REFRESH_EXPIRY_MS, SESSION_MAX_MS } from "./auth.js";
 
 function setup(password = "test-password", persistPath?: string) {
     const app = new Hono();
@@ -841,8 +841,6 @@ describe("Token Refresh", () => {
     });
 });
 
-const DAY_MS = 24 * 3600 * 1000;
-
 describe("Refresh token expiry", () => {
     async function withPersistedSession(
         edit: (record: Record<string, number>, now: number) => void,
@@ -882,11 +880,13 @@ describe("Refresh token expiry", () => {
         });
     }
 
-    it("issues a 14-day inactivity window under a 90-day absolute cap at login", async () => {
+    it("issues an inactivity window under an absolute cap at login", async () => {
         await withPersistedSession(() => {}, async ({ original }) => {
-            const loginAt = original.sessionExpiresAt - 90 * DAY_MS;
-            assert.ok(Math.abs(Date.now() - loginAt) < 60_000, "session cap should be 90 days from login");
-            assert.equal(original.refreshExpiresAt, loginAt + 14 * DAY_MS);
+            const approvedAt = original.sessionExpiresAt - SESSION_MAX_MS;
+            assert.ok(Math.abs(Date.now() - approvedAt) < 60_000, "session cap should run from password approval");
+            const issuedAt = original.expiresAt - 3_600_000;
+            assert.ok(issuedAt >= approvedAt, "tokens are issued after approval");
+            assert.equal(original.refreshExpiresAt, Math.min(issuedAt + REFRESH_EXPIRY_MS, original.sessionExpiresAt));
         });
     });
 
@@ -896,12 +896,16 @@ describe("Refresh token expiry", () => {
             async ({ app, tokens, original, readRecord }) => {
                 const before = Date.now();
                 const resp = await refresh(app, tokens);
+                const after = Date.now();
                 assert.equal(resp.status, 200);
                 const next = (await resp.json()) as { refresh_token: string };
 
                 const record = await readRecord(next.refresh_token);
                 assert.ok(record, "rotated refresh token should be persisted");
-                assert.ok(record.refreshExpiresAt >= before + 14 * DAY_MS, "refresh should push expiry 14 days out");
+                assert.ok(
+                    record.refreshExpiresAt >= before + REFRESH_EXPIRY_MS && record.refreshExpiresAt <= after + REFRESH_EXPIRY_MS,
+                    "refresh should restart the inactivity window from now",
+                );
                 assert.equal(record.sessionExpiresAt, original.sessionExpiresAt, "refresh must not extend the absolute cap");
             },
         );
@@ -918,6 +922,38 @@ describe("Refresh token expiry", () => {
                 assert.equal((await readRecord(next.refresh_token))?.refreshExpiresAt, cap);
             },
         );
+    });
+
+    it("never issues an access token that outlives the session", async () => {
+        let cap = 0;
+        await withPersistedSession(
+            (record, now) => { cap = record.sessionExpiresAt = now + 60_000; },
+            async ({ app, tokens, readRecord }) => {
+                const resp = await refresh(app, tokens);
+                assert.equal(resp.status, 200);
+                const next = (await resp.json()) as { refresh_token: string; expires_in: number };
+                assert.ok(next.expires_in <= 60, `expires_in ${next.expires_in} should be clamped to the session`);
+                assert.equal((await readRecord(next.refresh_token))?.expiresAt, cap);
+            },
+        );
+    });
+
+    it("rejects an access token once the session reaches its absolute cap", async () => {
+        const directory = await mkdtemp(join(tmpdir(), "obsidian-sync-mcp-auth-"));
+        const persistPath = join(directory, "auth.json");
+        try {
+            const first = setup("test-password", persistPath);
+            const tokens = await completeOAuthFlow(first.app, "test-password");
+            const persisted = JSON.parse(await readFile(persistPath, "utf-8"));
+            persisted.tokens[tokens.access_token].sessionExpiresAt = Date.now() - 1;
+            await writeFile(persistPath, JSON.stringify(persisted), "utf-8");
+
+            const second = setup("test-password", persistPath);
+            assert.equal(await second.auth.loadTokens(), true);
+            assert.equal(second.validateToken(`Bearer ${tokens.access_token}`), false);
+        } finally {
+            await rm(directory, { recursive: true, force: true });
+        }
     });
 
     it("rejects a refresh once the session reaches its absolute cap", async () => {
