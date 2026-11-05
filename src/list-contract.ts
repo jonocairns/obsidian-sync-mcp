@@ -1,6 +1,6 @@
-import { jsonSchemaAdapter, type JsonSchemaObject } from "@vitemcp/server";
+import { jsonSchemaAdapter } from "@vitemcp/server";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { toJsonSchema } from "./json-schema.js";
 import { MAX_LIST_LIMIT } from "./list-limits.js";
 
 export const listSchemaVersion = "1.0.0" as const;
@@ -40,7 +40,7 @@ export const structuredListResultSchema = envelope(z.discriminatedUnion("kind", 
 export type StructuredListResult = z.infer<typeof structuredListResultSchema>;
 function outputSchema(result: z.ZodTypeAny) {
     // Cross-field count invariants are enforced by runtime validation above.
-    return jsonSchemaAdapter({ ...zodToJsonSchema(envelope(result), { $refStrategy: "none" }) as JsonSchemaObject, type: "object" });
+    return jsonSchemaAdapter({ ...toJsonSchema(envelope(result)), type: "object" });
 }
 export const structuredNotesOutputSchema = outputSchema(notes);
 export const structuredFoldersOutputSchema = outputSchema(folders);

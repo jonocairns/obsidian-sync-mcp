@@ -1,6 +1,6 @@
-import { jsonSchemaAdapter, type JsonSchemaObject } from "@vitemcp/server";
+import { jsonSchemaAdapter } from "@vitemcp/server";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { toJsonSchema } from "./json-schema.js";
 
 export const schemaVersion = "0.10.0" as const;
 export const recoveryStrategySchema = z.enum(["retry_same", "read_then_retry", "change_request", "manual_reconcile", "none"]);
@@ -35,7 +35,7 @@ const noteBaseSchema = z.object({
     version: z.string(),
     size: z.number().int().nonnegative(),
     timestamps: timestampsSchema,
-    frontmatter: z.record(z.string()),
+    frontmatter: z.record(z.string(), z.string()),
     tags: z.array(z.string()),
     outgoingLinks: z.array(z.string()),
     attachments: z.array(attachmentReferenceSchema),
@@ -74,9 +74,7 @@ export type StructuredNoteResult = z.infer<typeof structuredNoteResultSchema>;
 
 // MCP requires an object-root output schema. Keep the exact discriminated union
 // visible to clients while adding the required root type alongside `anyOf`.
-const unionJsonSchema = zodToJsonSchema(structuredNoteResultSchema, {
-    $refStrategy: "none",
-}) as JsonSchemaObject;
+const unionJsonSchema = toJsonSchema(structuredNoteResultSchema);
 export const structuredNoteOutputSchema = jsonSchemaAdapter({
     ...unionJsonSchema,
     type: "object",

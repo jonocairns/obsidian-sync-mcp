@@ -1,7 +1,7 @@
 import { posix } from "node:path";
-import { UserError, jsonSchemaAdapter, type JsonSchemaObject, type ViteMCP } from "@vitemcp/server";
+import { UserError, jsonSchemaAdapter, type ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { toJsonSchema } from "./json-schema.js";
 import { validAttachmentPath, validSourceNotePath } from "./attachment-path.js";
 import { validateAttachment, type AttachmentMime } from "./attachment-validation.js";
 import type { VaultBackend, VersionedAttachment } from "./vault-backend.js";
@@ -54,7 +54,7 @@ export const attachmentResultSchema = z.discriminatedUnion("status", [
     }).strict(),
 ]);
 const attachmentOutputSchema = jsonSchemaAdapter({
-    ...zodToJsonSchema(attachmentResultSchema, { $refStrategy: "none" }) as JsonSchemaObject,
+    ...toJsonSchema(attachmentResultSchema),
     type: "object",
 });
 
