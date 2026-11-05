@@ -445,7 +445,7 @@ clients (`client_secret_post`). Confidential clients must authenticate with
 their issued client secret whenever they exchange an authorization code or
 refresh a token; public clients use S256 PKCE and rotating refresh tokens.
 
-The session is shared across all your Claude interfaces (Desktop, Web, Mobile) and persists across server restarts. You'll need to re-enter the password after 14 days of inactivity (configurable via `MCP_REFRESH_DAYS`).
+The session is shared across all your Claude interfaces (Desktop, Web, Mobile) and persists across server restarts. You'll need to re-enter the password after 14 days without use (`MCP_REFRESH_DAYS`), and in any case 90 days after you last entered it (`MCP_SESSION_MAX_DAYS`).
 
 For non-OAuth clients (curl, MCP Inspector, custom agents), you can also pass the token directly as `Authorization: Bearer <MCP_AUTH_TOKEN>`.
 
@@ -475,7 +475,8 @@ Without `MCP_AUTH_TOKEN`, the server runs without authentication — suitable fo
 | `ATTACHMENT_MAX_IMAGE_BYTES` | Optional | `7340032` | Maximum raw bytes returned for a PNG, JPEG, or WebP. The default encodes to ~9.79 MB base64, under the Claude API's 10 MB per-image cap. |
 | `ATTACHMENT_MAX_PDF_BYTES` | Optional | `10485760` | Maximum raw bytes returned for a PDF. The default encodes to ~13.98 MB base64, leaving room in a 32 MB request for conversation history. |
 | `LOG_LEVEL` | Optional | — | Set to `debug` for verbose logging (library logs, change feed, index sync) |
-| `MCP_REFRESH_DAYS` | Optional | `14` | Days before auth session expires |
+| `MCP_REFRESH_DAYS` | Optional | `14` | Days of inactivity before the auth session expires. Each token refresh restarts this window. |
+| `MCP_SESSION_MAX_DAYS` | Optional | `90` | Maximum days an auth session lasts after the password was entered, however often it is refreshed. |
 | `READ_ONLY` | Optional | `false` | Set to `true` to disable all write tools (`create_note`, `edit_note`, `delete_note`, `move_note`). Only read tools are exposed via MCP. Useful when sharing the server with multiple AI clients and write access should be opt-in. |
 | `WRITE_FOLDERS` | Optional | — | Comma-separated list of vault-relative folders where writes are allowed (e.g. `MCP,Inbox`). When set, the whole vault stays readable but `create_note`, `edit_note`, `delete_note`, and `move_note` refuse paths outside these folders (`move_note` requires both source and destination to be writable). Enforced server-side, unlike `MCP_INSTRUCTIONS`. Matching is case-sensitive and folder-boundary-aware (`MCP` matches `MCP/note.md` but not `MCP-private/note.md`). Ignored when `READ_ONLY=true`; unset means the whole vault is writable. |
 | `MCP_INSTRUCTIONS` | Optional | — | Extra text appended to the server's MCP `instructions` (the string clients inject into the system prompt). Use this to bake vault-specific conventions into the server — e.g. folder structure, naming rules, folders to avoid — so they apply across every MCP client without per-client config. Best-effort: not all clients respect `instructions`. |
