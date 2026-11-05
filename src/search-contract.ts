@@ -1,7 +1,7 @@
 import { MAX_SEARCH_LIMIT } from "./search-limits.js";
-import { jsonSchemaAdapter, type JsonSchemaObject } from "@vitemcp/server";
+import { jsonSchemaAdapter } from "@vitemcp/server";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { toJsonSchema } from "./json-schema.js";
 
 export const searchSchemaVersion = "1.0.0" as const;
 export const searchHitSchema = z.object({
@@ -40,7 +40,7 @@ export const structuredSearchResultSchema = envelopeSchema.refine(
 export type StructuredSearchResult = z.infer<typeof structuredSearchResultSchema>;
 // JSON Schema cannot express the cross-field count equality; validate it above.
 export const structuredSearchOutputSchema = jsonSchemaAdapter({
-    ...zodToJsonSchema(envelopeSchema, { $refStrategy: "none" }) as JsonSchemaObject,
+    ...toJsonSchema(envelopeSchema),
     type: "object",
 });
 

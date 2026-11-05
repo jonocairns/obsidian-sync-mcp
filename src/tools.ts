@@ -5,7 +5,7 @@ import { InvalidSearchInputError } from "./full-text-search.js";
 import { searchSchemaVersion, structuredSearchOutputSchema, searchError, toSearchToolResult } from "./search-contract.js";
 import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { toJsonSchema } from "./json-schema.js";
 import { makeDeepLink } from "./deeplink.js";
 import { parseIsoDate } from "./iso-date.js";
 import type { BackendEffect, BackendFailureCode, BackendMutationResult, VaultBackend } from "./vault-backend.js";
@@ -215,10 +215,10 @@ export function registerTools(
     }
 
     server.addTool = (tool: any) => {
-        // ViteMCP otherwise converts Zod 3 inputs on every request and the SDK
+        // ViteMCP otherwise converts Zod inputs on every request and the SDK
         // retains each compiled validator. Supply one JSON schema per tool,
         // keeping Zod's validator (including coercion) rather than using AJV.
-        const schema = zodToJsonSchema(tool.parameters, { $refStrategy: "none" });
+        const schema = toJsonSchema(tool.parameters);
         tool.parameters = {
             "~standard": {
                 ...tool.parameters["~standard"],
