@@ -34,7 +34,10 @@ interface TokenRecord {
     refreshToken: string;
     clientId: string;
     expiresAt: number;
+    /** Sliding: pushed out on every refresh, capped at sessionExpiresAt. */
     refreshExpiresAt: number;
+    /** Absolute: fixed when the password was entered; refresh never extends it. */
+    sessionExpiresAt: number;
 }
 
 interface RegisteredClient {
@@ -47,8 +50,17 @@ interface RegisteredClient {
 }
 
 const TOKEN_EXPIRY_MS = 3600 * 1000; // 1 hour
+const DAY_MS = 24 * 3600 * 1000;
 const DEFAULT_REFRESH_DAYS = 14;
-const REFRESH_EXPIRY_MS = (parseInt(process.env.MCP_REFRESH_DAYS ?? String(DEFAULT_REFRESH_DAYS)) || DEFAULT_REFRESH_DAYS) * 24 * 3600 * 1000;
+const DEFAULT_SESSION_MAX_DAYS = 90;
+function envDays(name: string, fallback: number): number {
+    return (parseInt(process.env[name] ?? String(fallback)) || fallback) * DAY_MS;
+}
+// Inactivity window: a session that goes this long without a refresh ends.
+const REFRESH_EXPIRY_MS = envDays("MCP_REFRESH_DAYS", DEFAULT_REFRESH_DAYS);
+// Absolute cap from password entry, so a leaked refresh token that keeps
+// being used cannot keep a session alive forever.
+const SESSION_MAX_MS = envDays("MCP_SESSION_MAX_DAYS", DEFAULT_SESSION_MAX_DAYS);
 const MAX_FAILED_BEFORE_LOCKOUT = 5;
 const BASE_LOCKOUT_MS = 5 * 1000; // 5 seconds, doubles each lockout
 const MAX_CLIENTS = 100;
@@ -424,12 +436,15 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
 
             const accessToken = randomBytes(32).toString("hex");
             const refreshToken = randomBytes(32).toString("hex");
+            const now = Date.now();
+            const sessionExpiresAt = now + SESSION_MAX_MS;
             const record: TokenRecord = {
                 accessToken,
                 refreshToken,
                 clientId: pending.clientId,
-                expiresAt: Date.now() + TOKEN_EXPIRY_MS,
-                refreshExpiresAt: Date.now() + REFRESH_EXPIRY_MS,
+                expiresAt: now + TOKEN_EXPIRY_MS,
+                refreshExpiresAt: Math.min(now + REFRESH_EXPIRY_MS, sessionExpiresAt),
+                sessionExpiresAt,
             };
             tokens.set(accessToken, record);
             refreshTokens.set(refreshToken, record);
@@ -462,11 +477,13 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 return c.json({ error: "invalid_grant", error_description: "refresh_token client mismatch" }, 400);
             }
 
-            // Check refresh token expiry
-            if (Date.now() > old.refreshExpiresAt) {
+            // Check refresh token expiry (inactivity window and absolute cap)
+            const now = Date.now();
+            if (now > old.refreshExpiresAt || now > old.sessionExpiresAt) {
                 tokens.delete(old.accessToken);
                 refreshTokens.delete(refreshToken);
-                console.log("Auth: refresh token expired, user must re-authenticate.");
+                const reason = now > old.sessionExpiresAt ? "session reached its maximum age" : "refresh token expired";
+                console.log(`Auth: ${reason}, user must re-authenticate.`);
                 return c.json({ error: "invalid_grant", error_description: "Refresh token expired" }, 400);
             }
 
@@ -479,8 +496,10 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 accessToken,
                 refreshToken: newRefreshToken,
                 clientId: old.clientId,
-                expiresAt: Date.now() + TOKEN_EXPIRY_MS,
-                refreshExpiresAt: old.refreshExpiresAt, // keep original expiry
+                expiresAt: now + TOKEN_EXPIRY_MS,
+                // Slide the inactivity window, but never past the absolute cap.
+                refreshExpiresAt: Math.min(now + REFRESH_EXPIRY_MS, old.sessionExpiresAt),
+                sessionExpiresAt: old.sessionExpiresAt,
             };
             tokens.set(accessToken, record);
             refreshTokens.set(newRefreshToken, record);
@@ -534,13 +553,21 @@ export function mountPasswordAuth(app: Hono, baseUrl: string, password: string, 
                 const now = Date.now();
                 const tokensHaveApprovalProvenance = data.version === AUTH_STATE_VERSION;
                 if (tokensHaveApprovalProvenance) {
+                    // Records saved before the absolute cap existed have no
+                    // sessionExpiresAt. Their refreshExpiresAt was fixed at
+                    // login, so it is a safe cap: they keep the expiry they
+                    // already had, and the next login gets the full window.
+                    const withSessionCap = (record: TokenRecord): TokenRecord =>
+                        typeof record.sessionExpiresAt === "number"
+                            ? record
+                            : { ...record, sessionExpiresAt: record.refreshExpiresAt };
                     for (const [k, v] of Object.entries(data.tokens ?? {})) {
                         const record = v as TokenRecord;
-                        if (record.accessToken && record.refreshToken && record.expiresAt > now) tokens.set(k, record);
+                        if (record.accessToken && record.refreshToken && record.expiresAt > now) tokens.set(k, withSessionCap(record));
                     }
                     for (const [k, v] of Object.entries(data.refreshTokens ?? {})) {
                         const record = v as TokenRecord;
-                        if (record.accessToken && record.refreshToken && record.refreshExpiresAt > now) refreshTokens.set(k, record);
+                        if (record.accessToken && record.refreshToken && record.refreshExpiresAt > now) refreshTokens.set(k, withSessionCap(record));
                     }
                 }
                 for (const [k, v] of Object.entries(data.clients ?? {})) {
