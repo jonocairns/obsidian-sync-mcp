@@ -334,7 +334,7 @@ describe("E2E: structured search", () => {
                         assert.match(output.content[0].text, /Welcome.md/);
                     } else {
                         assert.deepEqual(hits, []);
-                        assert.match(output.content[0].text, /No notes found/);
+                        assert.match(output.content[0].text, /No indexed hits returned for this query/);
                     }
                 }
             }
