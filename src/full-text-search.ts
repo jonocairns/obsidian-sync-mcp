@@ -93,7 +93,7 @@ const INDEX_KDF_SCRYPT_OPTIONS = {
     N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024,
 } as const;
 
-function queryTokens(value: string): string[] {
+export function queryTokens(value: string): string[] {
     return value.normalize("NFKC").match(/[\p{L}\p{N}_]+/gu) ?? [];
 }
 function quotePhrase(tokens: string[]): string {
@@ -103,7 +103,7 @@ export class InvalidSearchInputError extends Error {}
 
 export function buildFtsQuery(query: string, mode: FullTextSearchMode = "all"): string {
     const tokens = queryTokens(query);
-    if (tokens.length === 0) throw new InvalidSearchInputError("Search query must contain at least one letter or number.");
+    if (!tokens.some((token) => /[\p{L}\p{N}]/u.test(token))) throw new InvalidSearchInputError("Search query must contain at least one letter or number.");
     return mode === "phrase"
         ? quotePhrase(tokens)
         : tokens.map((token) => quotePhrase([token])).join(mode === "any" ? " OR " : " AND ");
@@ -546,7 +546,8 @@ export class FullTextIndex {
         const exactFilters = this.filterSql(options);
         const prefix = `${escapeLike(normalized)}%`;
         // A note matched by several aliases must contribute once, at its best rank.
-        const exactRows = this.statement(`
+        // An empty normalized lookup would turn the prefix into '%' and match every note.
+        const exactRows = normalized ? this.statement(`
             SELECT notes.path, notes.mtime, notes.title AS snippet,
                 MIN(CASE WHEN notes.title_norm = ? OR notes.basename_norm = ? OR notes.path_norm = ? THEN 0
                      WHEN note_aliases.alias_norm = ? THEN 1 ELSE 2 END) AS lane_rank
@@ -562,7 +563,7 @@ export class FullTextIndex {
             normalized, normalized, normalized, normalized,
             normalized, normalized, normalized, normalized, prefix, prefix, prefix, prefix,
             ...exactFilters.parameters, CANDIDATE_LIMIT,
-        ) as Array<{ path: string; mtime: number; snippet: string; lane_rank: number }>;
+        ) as Array<{ path: string; mtime: number; snippet: string; lane_rank: number }> : [];
         exactRows.forEach((row, index) =>
             add(row, index, Number(row.lane_rank) === 2 ? EXACT_PREFIX_WEIGHT : EXACT_WEIGHT, "exact", 1));
 

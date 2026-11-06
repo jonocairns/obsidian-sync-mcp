@@ -1,7 +1,7 @@
 import { DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT } from "./list-limits.js";
 import { listSchemaVersion, listError, toListToolResult, structuredNotesOutputSchema, structuredFoldersOutputSchema, structuredTagsOutputSchema } from "./list-contract.js";
 import { MAX_SEARCH_LIMIT } from "./search-limits.js";
-import { InvalidSearchInputError } from "./full-text-search.js";
+import { InvalidSearchInputError, queryTokens } from "./full-text-search.js";
 import { searchSchemaVersion, structuredSearchOutputSchema, searchError, toSearchToolResult } from "./search-contract.js";
 import type { ViteMCP } from "@vitemcp/server";
 import { z } from "zod";
@@ -378,7 +378,7 @@ export function registerTools(
             mode: z
                 .enum(["all", "any", "phrase"])
                 .optional()
-                .describe("Match all words (default), any word, or the exact token phrase."),
+                .describe("all (default): every word within one passage or metadata record, not across the whole note; any: any word; phrase: exact token sequence."),
             limit: z.coerce
                 .number()
                 .int()
@@ -399,6 +399,10 @@ export function registerTools(
             try {
                 const statusNotice = formatIndexStatusNotice(searchIndex.status);
                 const results = searchIndex.searchNotes({ query, folder, tag, modifiedAfter, mode, limit });
+                const notices = statusNotice ? [statusNotice] : [];
+                if (results.length === 0 && (mode ?? "all") === "all" && queryTokens(query).length > 1) {
+                    notices.push("Try mode 'any' with the same filters to broaden this all-word search.");
+                }
                 failureStage = "output";
                 const hits = results.map(({ mtime, ...result }) => ({
                     ...result,
@@ -408,7 +412,7 @@ export function registerTools(
                 return toSearchToolResult({
                     schemaVersion: searchSchemaVersion, status: "ok",
                     result: { hits, returnedCount: hits.length },
-                    notices: statusNotice ? [statusNotice] : [],
+                    notices,
                 });
             } catch (error) {
                 const invalidInput = failureStage === "execution" && error instanceof InvalidSearchInputError;

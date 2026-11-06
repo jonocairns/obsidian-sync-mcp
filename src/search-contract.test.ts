@@ -6,7 +6,7 @@ it("validates empty results, errors, count equality, and strict fields", () => {
     const empty = { schemaVersion: searchSchemaVersion, status: "ok" as const,
         result: { hits: [], returnedCount: 0 }, notices: [] };
     assert.equal(toSearchToolResult(empty).isError, false);
-    assert.match(toSearchToolResult(empty).content[0].text, /No notes found/);
+    assert.match(toSearchToolResult(empty).content[0].text, /No indexed hits returned for this query/);
     assert.equal(structuredSearchResultSchema.safeParse({ ...empty, result: { hits: [], returnedCount: 1 } }).success, false);
     assert.equal(structuredSearchResultSchema.safeParse({ ...empty, hasMore: false }).success, false);
     assert.equal(structuredSearchResultSchema.safeParse({ ...empty, schemaVersion: "2" }).success, false);

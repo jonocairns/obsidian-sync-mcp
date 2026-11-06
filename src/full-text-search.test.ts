@@ -101,11 +101,27 @@ describe("FTS query construction", () => {
     });
 
     it("rejects punctuation-only input", () => {
-        assert.throws(() => buildFtsQuery("---"), /letter or number/);
+        for (const query of ["---", "___", "＿"]) {
+            assert.throws(() => buildFtsQuery(query), /letter or number/);
+        }
     });
 });
 
 describe("FullTextIndex", () => {
+    it("skips empty normalized name lookups while preserving body searches for md", async () => {
+        const index = await FullTextIndex.open(":memory:");
+        try {
+            index.update("ordinary.md", "# Ordinary\nUnrelated content.", 100);
+            index.update("format.md", "# Format\nThe md format.", 100);
+            for (const query of [".md", "md", "_md_"]) {
+                const hits = index.search({ query });
+                assert.deepEqual(hits.map((hit) => hit.path), ["format.md"], query);
+                assert.equal(hits[0].matchedBy, "passage");
+            }
+            assert.throws(() => index.search({ query: "___" }), /letter or number/);
+        } finally { index.close(); }
+    });
+
     it("ranks title matches above body-only matches and returns snippets", async () => {
         const index = await FullTextIndex.open(":memory:");
         try {

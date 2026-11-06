@@ -22,7 +22,7 @@ const envelopeSchema = z.discriminatedUnion("status", [
         schemaVersion: z.literal(searchSchemaVersion),
         status: z.literal("ok"),
         result: z.object({ hits: z.array(searchHitSchema).max(MAX_SEARCH_LIMIT), returnedCount: z.number().int().min(0).max(MAX_SEARCH_LIMIT).describe("Number of returned hits, not total matches. Missing hits do not prove absence.") }).strict(),
-        notices: z.array(z.string()).describe("Existing index-status notices; no additional freshness guarantee."),
+        notices: z.array(z.string()).describe("Index-status and search-recovery notices; no additional freshness guarantee."),
     }).strict(),
     z.object({
         schemaVersion: z.literal(searchSchemaVersion),
@@ -62,7 +62,7 @@ export function toSearchToolResult(value: StructuredSearchResult) {
             const location = hit.breadcrumb ? ` — ${hit.breadcrumb}` : "";
             const snippet = hit.snippet ? `\n  ${hit.snippet}` : "";
             return `- [${hit.path}](${hit.deepLink})${date}${location}${snippet}`;
-        }).join("\n") || "No notes found matching the search.";
+        }).join("\n") || "No indexed hits returned for this query.";
         text = [...validated.notices, rendered].join("\n\n");
     }
     return {

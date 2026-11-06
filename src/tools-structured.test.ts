@@ -451,6 +451,56 @@ it("serves schema-valid indexed search without vault reads, preserving limits an
     } finally { index.close(); }
 });
 
+it("suggests any only for empty multiword all searches, after freshness notices", async () => {
+    const { FullTextIndex } = await import("./full-text-search.js");
+    const { structuredSearchResultSchema } = await import("./search-contract.js");
+    const db = await FullTextIndex.open(":memory:");
+    const index = new SearchIndex(db);
+    try {
+        index.update("plans/runbook.md", "---\ntags: [ops]\n---\n# Plan\n## Deployment\nCanary rollout.\n## Recovery\nRollback procedure.", 1000);
+        const vault = backend({ status: "error", code: "BACKEND_UNAVAILABLE", effects: [] });
+        vault.readNote = async () => { throw new Error("unexpected vault read"); };
+        const tool = toolsFor(vault, index).get("search_notes");
+        const filters = { folder: "plans", tag: "ops", modified_after: "1970-01-01T00:00:01Z" };
+        const search = async (args: Record<string, unknown>) => {
+            const output = await tool.execute({ ...filters, ...args }, {});
+            assert.ok(structuredSearchResultSchema.safeParse(output.structuredContent).success);
+            return output;
+        };
+        index.setBuildStatus("ready", 1, 1);
+        for (const mode of [undefined, "all"]) {
+            const empty = await search({ query: "canary rollback", mode });
+            assert.equal(empty.structuredContent.result.returnedCount, 0);
+            assert.deepEqual(empty.structuredContent.notices, ["Try mode 'any' with the same filters to broaden this all-word search."]);
+            assert.match(empty.content[0].text, /No indexed hits returned/);
+            assert.doesNotMatch(empty.content[0].text, /⚠/);
+        }
+        const relaxed = await search({ query: "canary rollback", mode: "any" });
+        assert.deepEqual(relaxed.structuredContent.result.hits.map((hit: { path: string }) => hit.path), ["plans/runbook.md"]);
+        for (const args of [
+            { query: "canary" },
+            { query: "absent" },
+            { query: "absent words", mode: "any" },
+            { query: "canary rollback", mode: "phrase" },
+            { query: "canary rollout", mode: "all" },
+        ]) {
+            assert.deepEqual((await search(args)).structuredContent.notices, []);
+        }
+        for (const query of ["!!!", "___"]) {
+            const error = await search({ query });
+            assert.equal(error.structuredContent.error.code, "INVALID_SEARCH_INPUT");
+        }
+        for (const state of ["building", "catching_up", "error"] as const) {
+            index.setBuildStatus(state, 1, 2, "private backend details");
+            const empty = await search({ query: "canary rollback" });
+            assert.equal(empty.structuredContent.notices.length, 2);
+            assert.ok(empty.content[0].text.startsWith(empty.structuredContent.notices[0]));
+            assert.match(empty.structuredContent.notices[1], /mode 'any'/);
+            assert.doesNotMatch(JSON.stringify(empty), /private backend/);
+        }
+    } finally { index.close(); }
+});
+
 it("logs only sanitized search failure stages when debug logging is enabled", async () => {
     const { FullTextIndex } = await import("./full-text-search.js");
     const index = new SearchIndex(await FullTextIndex.open(":memory:"));
