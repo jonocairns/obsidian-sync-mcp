@@ -105,6 +105,13 @@ describe("FTS query construction", () => {
             assert.throws(() => buildFtsQuery(query), /letter or number/);
         }
     });
+
+    it("ignores standalone underscores while retaining underscores within tokens", () => {
+        for (const mode of ["all", "any", "phrase"] as const) {
+            assert.equal(buildFtsQuery("canary ___ rollback ＿", mode), buildFtsQuery("canary rollback", mode));
+        }
+        assert.equal(buildFtsQuery("foo_bar"), '"foo_bar"');
+    });
 });
 
 describe("FullTextIndex", () => {
@@ -119,6 +126,19 @@ describe("FullTextIndex", () => {
                 assert.equal(hits[0].matchedBy, "passage");
             }
             assert.throws(() => index.search({ query: "___" }), /letter or number/);
+        } finally { index.close(); }
+    });
+
+    it("finds body and metadata matches despite standalone underscores", async () => {
+        const index = await FullTextIndex.open(":memory:");
+        try {
+            index.update("body.md", "# Ordinary\nCanary rollback procedure.", 100);
+            index.update("metadata.md", "---\naliases: [Canary rollback]\n---\n# Reference\nOther content.", 100);
+            for (const mode of ["all", "any", "phrase"] as const) {
+                const hits = index.search({ query: "canary ___ rollback", mode });
+                assert.deepEqual(hits, index.search({ query: "canary rollback", mode }));
+                assert.deepEqual(new Set(hits.map((hit) => hit.path)), new Set(["body.md", "metadata.md"]));
+            }
         } finally { index.close(); }
     });
 

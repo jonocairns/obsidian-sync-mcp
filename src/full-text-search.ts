@@ -94,7 +94,9 @@ const INDEX_KDF_SCRYPT_OPTIONS = {
 } as const;
 
 export function queryTokens(value: string): string[] {
-    return value.normalize("NFKC").match(/[\p{L}\p{N}_]+/gu) ?? [];
+    // FTS treats underscores as separators; standalone underscores contain no searchable terms.
+    return (value.normalize("NFKC").match(/[\p{L}\p{N}_]+/gu) ?? [])
+        .filter((token) => /[\p{L}\p{N}]/u.test(token));
 }
 function quotePhrase(tokens: string[]): string {
     return `"${tokens.join(" ").replaceAll('"', '""')}"`;
@@ -103,7 +105,7 @@ export class InvalidSearchInputError extends Error {}
 
 export function buildFtsQuery(query: string, mode: FullTextSearchMode = "all"): string {
     const tokens = queryTokens(query);
-    if (!tokens.some((token) => /[\p{L}\p{N}]/u.test(token))) throw new InvalidSearchInputError("Search query must contain at least one letter or number.");
+    if (tokens.length === 0) throw new InvalidSearchInputError("Search query must contain at least one letter or number.");
     return mode === "phrase"
         ? quotePhrase(tokens)
         : tokens.map((token) => quotePhrase([token])).join(mode === "any" ? " OR " : " AND ");

@@ -480,6 +480,7 @@ it("suggests any only for empty multiword all searches, after freshness notices"
         for (const args of [
             { query: "canary" },
             { query: "absent" },
+            { query: "absent ___" },
             { query: "absent words", mode: "any" },
             { query: "canary rollback", mode: "phrase" },
             { query: "canary rollout", mode: "all" },
